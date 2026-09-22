@@ -1,0 +1,34 @@
+---
+# Bộ công cụ chẩn đoán chuẩn của SysAdmin, cài sẵn để khi sự cố xảy ra
+# không phải vừa xử lý vừa đi cài công cụ.
+
+common_packages_redhat:
+  - chrony
+  - tcpdump
+  - lsof
+  - sysstat
+  - conntrack-tools
+  - audit
+  - setroubleshoot-server          # dịch log AVC của SELinux ra tiếng người
+  - policycoreutils-python-utils   # cung cấp semanage, dùng từ M2
+  - iproute-tc
+  - bind-utils
+  - nmap-ncat
+  - firewalld
+  - git
+  - vim
+  - python3-libselinux             # bắt buộc cho các module SELinux của Ansible
+
+common_packages_debian:
+  - chrony
+  - tcpdump
+  - lsof
+  - sysstat
+  - conntrack
+  - auditd
+  - iproute2
+  - dnsutils
+  - netcat-openbsd
+  - ufw
+  - git
+  - vim

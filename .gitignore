@@ -1,0 +1,28 @@
+# Vagrant: chứa đĩa ảo và state, tuyệt đối không commit
+.vagrant/
+*.box
+
+# Secret: khoá riêng, vault password, chứng chỉ
+*.key
+*.pem
+*_rsa
+*_ed25519
+vault_pass*
+.vault_pass
+pki/
+
+# Ansible
+*.retry
+ansible/collections/
+
+# Kết quả chạy, không phải mã nguồn
+diagnostics/
+loadtest/results/
+*.log
+
+# Rác hệ điều hành và editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

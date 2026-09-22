@@ -1,0 +1,12 @@
+---
+# Ghim phiên bản để playbook không đổi hành vi khi upstream phát hành bản mới giữa chừng.
+# Cài bằng: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: ansible.posix          # selinux, mount, sysctl, firewalld
+    version: "2.2.2"
+  - name: community.general      # ufw, timezone, nhiều module tiện ích
+    version: "13.4.0"
+  - name: community.mysql        # dùng từ M2
+    version: "5.0.2"
+  - name: community.crypto       # PKI nội bộ, dùng từ M3
+    version: "3.4.0"

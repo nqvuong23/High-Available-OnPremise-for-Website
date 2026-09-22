@@ -1,0 +1,3 @@
+---
+# Chưa có handler nào ở M1: role common không sửa file cấu hình dịch vụ nào
+# cần reload. Các role từ M2 trở đi sẽ dùng handler kèm bước kiểm tra cú pháp.

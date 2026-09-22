@@ -1,0 +1,15 @@
+# Repo được sửa từ Windows nhưng chạy trên Linux.
+# Ép LF để script không dính CRLF gây lỗi "bad interpreter: /bin/bash^M".
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.j2   text eol=lf
+*.cfg  text eol=lf
+Vagrantfile text eol=lf
+
+*.png binary
+*.jpg binary
+*.gz  binary

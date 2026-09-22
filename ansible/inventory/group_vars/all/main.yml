@@ -1,0 +1,48 @@
+---
+# Biến dùng ở nhiều nơi chỉ được định nghĩa MỘT lần, tại đây.
+
+# --- Mạng lab ---
+lab_subnet:   "10.10.10.0/24"
+lab_prefix:   24
+vip_address:  "10.10.10.100"
+site_domain:  "shop.lab.internal"
+
+# Các nguồn được coi là "quản trị": Windows host và máy admin mgmt01
+admin_ips:
+  - "10.10.10.1"
+  - "10.10.10.5"
+
+# IP của hai load balancer; MySQL thấy IP nguồn là các IP này chứ không phải IP web node
+lb_ips:
+  - "10.10.10.11"
+  - "10.10.10.12"
+
+# Tên NIC lab được suy ra từ fact, vì VMware đặt tên khác nhau giữa các máy
+# (ens33, ens37, ens160, ens192...). Muốn cố định thì khai lab_iface trong host_vars.
+lab_iface: >-
+  {{ ansible_facts.interfaces
+     | map('extract', ansible_facts)
+     | selectattr('ipv4', 'defined')
+     | selectattr('ipv4.address', 'match', '^10\.10\.10\.')
+     | map(attribute='device')
+     | first }}
+
+# --- Hệ thống ---
+timezone: "Asia/Ho_Chi_Minh"
+
+# UID/GID cố định cho user nginx, phải giống nhau trên web01, web02 và nfs01
+# để quyền file trên NFS không lệch. Tạo TRƯỚC khi cài package.
+nginx_user: nginx
+nginx_uid:  2001
+nginx_gid:  2001
+
+# --- Phiên bản ghim (dùng từ M2 trở đi) ---
+mysql_version_major: "8.4"
+nginx_module_stream: "1.26"
+php_module_stream:   "8.3"
+wordpress_version:   "7.0"      # chốt đủ bản vá khi cài ở M4
+woocommerce_version: "11.1.1"
+wp_cli_version:      "2.12.0"
+
+# --- Keepalived (dùng từ M3) ---
+vrrp_router_id: 51
