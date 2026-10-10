@@ -6,64 +6,70 @@ paths:
   - "ansible/roles/nfs_client/**"
 ---
 
-# Web, WordPress và NFS trên Rocky 9
+# Web, WordPress and NFS on Ubuntu 24.04
 
-> Hai web node phải **giống hệt nhau**. Bất kỳ khác biệt nào giữa web01 và web02 đều là lỗi cần sửa.
+> The two web nodes must be **identical**. Any difference between web01 and web02 is a bug to fix.
+> web01 is `192.168.20.11`, web02 is `192.168.20.12`, nfs01 is `192.168.20.21`, all inside the app zone.
 
 ## NFS
 
-- Server chạy trên nfs01 (Ubuntu 24.04) với `nfs-kernel-server`, chỉ bật NFSv4, tắt v3.
-- Export `/srv/nfs/uploads` cho đúng hai IP của web node, chế độ `rw,sync,no_subtree_check`.
-- Client trên Rocky cài `nfs-utils`, mount với `nfsvers=4.2,hard,noatime,_netdev`.
-- Mount `hard` là quyết định có chủ đích: bảo toàn dữ liệu, đánh đổi là tiến trình treo ở trạng thái D khi NFS chết.
-- Chỉ mount đúng thư mục `wp-content/uploads`, không mount cả cây WordPress.
+- The server runs on nfs01 with `nfs-kernel-server`, NFSv4 only, v3 disabled.
+- Export `/srv/nfs/uploads` to exactly the two web node addresses, with `rw,sync,no_subtree_check`.
+- Clients install `nfs-common` and mount with `nfsvers=4.2,hard,noatime,_netdev`.
+- NFS traffic stays inside the app zone and never touches `router01`, which is why an NFS failure cannot be confused with a routing failure.
+- Mounting `hard` is deliberate: data integrity first, at the cost of processes hanging in state D when NFS dies.
+- Mount only `wp-content/uploads`, never the whole WordPress tree.
 
-## UID và GID
+## UID and GID
 
-- Tạo group và user `nginx` với **số UID/GID cố định giống nhau** trên web01, web02 và nfs01.
-- Phải tạo **trước khi** cài package, nếu không package sẽ tự cấp số tuỳ ý và lệch giữa các máy.
-- UID lệch nhau trên NFS gây lỗi quyền rất khó nhìn ra vì thư mục vẫn hiện bình thường.
+- Create the `www-data` group and user with the **same fixed UID and GID** on web01, web02 and nfs01.
+- Ubuntu ships `www-data` as UID 33 by default, but do not rely on the default: pin the number explicitly so a package install order cannot change it.
+- Create them **before** installing packages, otherwise a package assigns an arbitrary number and the nodes drift.
+- Mismatched UIDs over NFS cause permission errors that are very hard to spot, because the directory still lists normally.
 
-## Nginx và PHP-FPM
+## Nginx and PHP-FPM
 
-- Bật module stream bằng `dnf module enable nginx:1.26` và `php:8.3` trước khi cài.
-- Extension PHP cần cho WooCommerce: mysqlnd, gd, mbstring, xml, intl, opcache, zip.
-- PHP-FPM chạy dưới user `nginx`, nghe qua unix socket, chế độ `pm=dynamic`.
-- `pm.max_children` tính từ RAM đo được thật của mỗi tiến trình, không đặt theo cảm tính.
-- Bật `pm.status_path` cho `/fpm-status` nhưng chỉ cho phép nguồn quản trị và LB truy cập.
-- Nginx dùng `set_real_ip_from` với hai IP của LB để log ra IP thật của client.
-- Đặt `client_max_body_size` cùng `upload_max_filesize` và `post_max_size` đủ lớn cho ảnh sản phẩm.
+- Install `nginx` 1.30.5 from the upstream nginx APT repository; Ubuntu 24.04 only ships 1.24.0, so the role adds the repository and its signing key first.
+- Install `php8.3-fpm` from Ubuntu apt; it is in the default repositories, so no extra repo step is needed.
+- PHP extensions WooCommerce needs: `mysqlnd`, `gd`, `mbstring`, `xml`, `intl`, `opcache`, `zip`, `curl`.
+- PHP-FPM runs as `www-data`, listens on a unix socket, `pm=dynamic`.
+- Set `pm.max_children` from the real measured memory per process, never by guesswork.
+- Enable `pm.status_path` for `/fpm-status`, restricted to administrative sources and the LBs.
+- Use `set_real_ip_from` with the two LB addresses so Nginx logs the real client IP instead of the LB.
+- Set `client_max_body_size` together with `upload_max_filesize` and `post_max_size` large enough for product images.
+- Nginx listens on the app-zone IP and loopback; it must not bind the temporary NAT NIC.
 
 ## Health check
 
-- `/healthz.php` chỉ trả về chuỗi tĩnh, chứng minh Nginx gọi được PHP-FPM.
-- **Không** truy vấn database và **không** đọc NFS trong health check.
-- Lý do: thành phần dùng chung mà lỗi sẽ khiến HAProxy loại cả hai web node cùng lúc và gây sập dây chuyền.
-- Hệ quả chấp nhận: lỗi DB và NFS phải được phát hiện bằng `healthcheck.py` chứ không qua HAProxy.
+- `/healthz.php` returns a static string only, proving Nginx can reach PHP-FPM.
+- It must **not** query the database and must **not** read NFS.
+- Reason: a shared component failing would make HAProxy drop both web nodes at once and turn one fault into a full outage.
+- Accepted consequence: DB and NFS failures must be caught by `healthcheck.py`, not through HAProxy.
 
-## SELinux trên Rocky 9
+## AppArmor on Ubuntu 24.04
 
-- Giữ Enforcing, không chuyển sang Permissive để né lỗi.
-- Bật boolean `httpd_use_nfs` để Nginx đọc được thư mục mount từ NFS.
-- Bật boolean `httpd_can_network_connect_db` để PHP nối được MySQL qua VIP.
-- Khi một dịch vụ mới lỗi, kiểm tra `ausearch -m avc -ts recent` **trước khi** nghi ngờ cấu hình ứng dụng.
-- Sau khi chạy đủ luồng đọc, ghi và upload thì log AVC phải sạch.
+- Keep AppArmor enforcing; do not set a profile to complain mode just to make an error go away.
+- Ubuntu ships no enforcing profile for Nginx or PHP-FPM by default, so the web path usually needs no profile work. Confirm that rather than assuming it, with `aa-status`.
+- NFS access from Nginx needs no boolean equivalent, unlike SELinux. If reads from the mount fail, the cause is UID/GID or export options, not a security module.
+- When a service breaks unexpectedly, check `journalctl -k | grep -i apparmor` and `/var/log/syslog` for DENIED lines **before** suspecting the application configuration.
+- If a profile does have to change, ship it through Ansible with `aa-complain` never used as a permanent fix.
 
-## WordPress và WooCommerce
+## WordPress and WooCommerce
 
-- Tải một artifact duy nhất rồi triển khai lên cả hai node để đảm bảo code giống hệt; có kiểm tra checksum khi tải.
-- Ghim phiên bản WordPress, WooCommerce và WP-CLI trong `group_vars`, không dùng "latest".
-- `wp-config.php` đặt `DB_HOST` trỏ tới `10.10.10.100:3306`, tức là đi qua HAProxy.
-- Đặt `DISALLOW_FILE_MODS=true` để không ai cài plugin qua giao diện quản trị làm lệch code.
-- Đặt `WP_HOME` và `WP_SITEURL` là `https://shop.lab.internal`.
-- Phải đọc header `X-Forwarded-Proto` và tự đặt `$_SERVER['HTTPS']='on'`, nếu không sẽ lặp redirect hoặc mixed content.
-- Salt lấy từ Vault, file `wp-config.php` đặt quyền 640 thuộc `root:nginx`.
-- Tắt WP-Cron mặc định và chạy cron hệ thống trên **một node duy nhất**, tránh WooCommerce chạy tác vụ định kỳ trùng lặp.
-- Chạy `wp core install` **đúng một lần** trên web01, dùng `run_once` và chỉ chạy khi chưa cài.
+- Download a single artifact and deploy it to both nodes so the code is byte-identical; verify the checksum on download.
+- Pin the WordPress, WooCommerce and WP-CLI versions in `group_vars`; never use "latest".
+- `wp-config.php` sets `DB_HOST` to `192.168.10.100:3306`, which means it goes through HAProxy in the dmz zone.
+- Set `DISALLOW_FILE_MODS=true` so nobody can install a plugin through the admin UI and make the nodes drift.
+- Set `WP_HOME` and `WP_SITEURL` to `https://shop.lab.internal`.
+- Read the `X-Forwarded-Proto` header and set `$_SERVER['HTTPS']='on'`, otherwise the site loops on redirects or serves mixed content.
+- Take the salts from Vault; `wp-config.php` is mode 640 owned by `root:www-data`.
+- Disable the default WP-Cron and run a system cron on **one node only**, so WooCommerce scheduled tasks do not run twice.
+- Run `wp core install` **exactly once** on web01, with `run_once` and a guard so it only runs when not already installed.
 
-## Nghiệm thu
+## Acceptance
 
-- Đặt một đơn hàng thật qua HTTPS và xác nhận đơn xuất hiện trên cả db01 lẫn db02.
-- Upload ảnh khi request vào web01 rồi xem lại khi request vào web02, và làm ngược lại.
-- So `sha256sum` toàn bộ cây code giữa hai node, phải khớp hoàn toàn.
-- Dừng Nginx trên một node và xác nhận HAProxy đánh DOWN trong khoảng 6 giây mà site vẫn phục vụ.
+- Place a real order over HTTPS and confirm it appears on both db01 and db02.
+- Upload an image through web01 and view it through web02, then the other way round.
+- Compare `sha256sum` across the whole code tree on both nodes; it must match exactly.
+- Stop Nginx on one node and confirm HAProxy marks it DOWN within about 6 seconds while the site keeps serving.
+- Confirm a web node cannot reach `192.168.30.11:3306` directly; only the VIP path may work.

@@ -7,87 +7,96 @@ paths:
   - "loadtest/**"
 ---
 
-# Mô phỏng sự cố, runbook và vận hành
+# Failure simulation, runbooks and operations
 
-> Đây là phần tạo khác biệt lớn nhất khi phỏng vấn: bằng chứng đã tự xử lý sự cố thật và rút ra bài học.
+> This is the biggest differentiator in an interview: evidence of having handled real incidents and drawn lessons from them.
 
-## Quy trình cho mỗi kịch bản
+## Procedure for every scenario
 
-- Khôi phục về snapshot `baseline` hoặc xác nhận hệ thống đang khoẻ.
-- Chạy `probe.sh` ở nền trước khi gây lỗi, để đo tác động thật lên người dùng.
-- Gây lỗi bằng `inject.sh`; tốt nhất nhờ người khác chọn hộ kịch bản mà mình không biết trước.
-- Xử lý như người trực ca, **không đọc nguyên nhân gốc trước khi tự chẩn đoán xong**.
-- Khôi phục dịch vụ, xác định nguyên nhân gốc, rồi rollback bằng Ansible chứ không sửa tay.
-- Viết postmortem ngay sau khi xong, lúc còn nhớ chi tiết.
+- Restore to the `baseline` snapshot, or confirm the system is healthy.
+- Start `probe.sh` in the background before injecting, so the real user impact is measured.
+- Inject with `inject.sh`; ideally have someone else pick a scenario you do not know in advance.
+- Work it like an on-call engineer and **do not read the root cause before finishing the diagnosis**.
+- Restore service, identify the root cause, then roll back through Ansible rather than by hand.
+- Write the postmortem immediately afterwards, while the detail is fresh.
 
-## Cấu trúc thư mục chaos
+## Chaos directory layout
 
-- Mỗi kịch bản một thư mục `chaos/Sxx-<ten>/`.
-- Bên trong gồm `inject.sh` gây lỗi, `rollback.sh` khôi phục, và `README.md` ghi mục tiêu học cùng kỳ vọng quan sát.
-- Kế hoạch 19 kịch bản, bắt buộc tối thiểu 10, hoàn thành đầy đủ tối thiểu 12.
+- One directory per scenario: `chaos/Sxx-<name>/`.
+- Inside: `inject.sh` to break it, `rollback.sh` to restore it, and `README.md` with the learning goal and expected observations.
+- 19 scenarios planned, at least 10 required, at least 12 fully completed.
 
-## Các kịch bản đã xác định
+## Identified scenarios
 
-- Lệch code giữa hai web node, mô phỏng việc cài plugin qua wp-admin trên một máy.
-- NFS chết khiến tiến trình PHP treo ở trạng thái D, không phải lỗi của PHP.
-- Lỗi database chỉ xảy ra trên một web node, mà health check nông cố ý không phát hiện được.
-- GRANT sai vì quên rằng MySQL thấy IP nguồn là IP của LB chứ không phải IP web node.
-- Primary chết đột ngột, dùng để đo RTO và RPO.
+- Code drift between the two web nodes, simulating a plugin installed through wp-admin on one machine.
+- NFS death leaving PHP processes hung in state D, which is not a PHP fault.
+- A database failure affecting only one web node, which the deliberately shallow health check cannot detect.
+- A wrong GRANT, from forgetting that MySQL sees the LB address as the source rather than the web node address.
+- Sudden primary death, used to measure RTO and RPO.
+- `router01` down, which breaks every cross-zone flow at once: HAProxy marks all backends DOWN, web nodes cannot reach the DB VIP, and Ansible cannot reach anything. The lesson is distinguishing a routing outage from a service outage.
+- A static route removed on one node, so it can reach its own zone but nothing else, which looks exactly like a firewall problem.
+- IP forwarding turned off on `router01`, a partial version of the same failure that is harder to spot because the router itself still answers pings.
 
-## Ứng viên bổ sung cho đủ danh mục
+## Additional candidates to fill the catalogue
 
-- Dừng HAProxy hoặc Keepalived trên node đang giữ VIP.
-- Dừng Nginx hoặc PHP-FPM trên một web node.
-- Tắt boolean SELinux `httpd_use_nfs` khiến Nginx không đọc được thư mục upload.
-- Làm đầy disk, và một kịch bản riêng làm đầy inode.
-- Chặn nhầm cổng trong firewall: 3306, 2049, 9200 hoặc VRRP.
-- Replication lag tăng vọt, hoặc IO thread lỗi.
-- Replica chết khiến semi-sync âm thầm hạ xuống async.
-- Primary khởi động lại nhưng người trực quên mở quyền ghi.
-- Lệch giờ giữa các node do chrony hỏng.
-- Chứng chỉ TLS hết hạn hoặc sai SAN.
-- Cấu hình bị sửa tay trên node, phát hiện bằng `--check --diff`.
+- Stop HAProxy or Keepalived on the node currently holding the VIP.
+- Stop Nginx or PHP-FPM on one web node.
+- Break the NFS export options or the UID/GID mapping so Nginx cannot read the uploads directory.
+- Fill the disk, and a separate scenario that fills the inode table.
+- Wrong firewall rule blocking 3306, 2049, 9200 or VRRP.
+- Masquerade rule removed on `router01`, so the lab keeps working but `apt` stops, which only surfaces on the next deployment.
+- A web node given a second NIC into the db zone, bypassing the router: everything works, and the isolation test silently stops meaning anything.
+- Replication lag spiking, or the IO thread failing.
+- Replica death letting semi-sync silently downgrade to async.
+- A primary restarted while the operator forgets to open write access.
+- Clock drift between nodes from a broken chrony.
+- A TLS certificate expired or carrying the wrong SAN.
+- Configuration edited by hand on a node, detected with `--check --diff`.
 
-## Runbook
+## Runbooks
 
-- RB-01 — failover load balancer và VIP khi HAProxy chủ chết, kèm cách đo thời gian gián đoạn.
-- RB-02 — failover database khi primary chết: xác nhận đã fence, chọn replica, mở quyền ghi, chuyển HAProxy, kiểm tra lại.
-- RB-03 — đưa primary cũ quay lại làm replica, bắt buộc kiểm tra errant GTID trước.
-- RB-04 — mở quyền ghi sau khi restart primary có kế hoạch, vì MySQL luôn boot ở chế độ chỉ đọc.
-- Mỗi runbook viết theo khung: triệu chứng, cách kiểm tra, các bước xử lý, cách xác minh, cách rollback.
-- Tiêu chí đạt: người khác đọc và làm theo được mà không cần hỏi lại.
+- RB-01 — load balancer and VIP failover when the active HAProxy dies, including how to measure the interruption.
+- RB-02 — database failover when the primary dies: confirm it is fenced, choose the replica, open write access, switch HAProxy, verify.
+- RB-03 — returning the old primary as a replica, with a mandatory errant GTID check first.
+- RB-04 — opening write access after a planned primary restart, since MySQL always boots read-only.
+- Every runbook follows the same frame: symptoms, how to confirm, the steps, how to verify, how to roll back.
+- Each runbook must say early on how to rule out a routing or router failure, because that fault presents as a failure of whatever layer is being investigated.
+- Acceptance: someone else can follow it without asking a single question.
 
-## Mẫu postmortem
+## Postmortem template
 
-- Tóm tắt sự cố trong vài dòng.
-- Tác động thật, lấy số liệu từ `probe.sh` chứ không ước lượng.
-- Dòng thời gian: lúc phát hiện, lúc bắt đầu xử lý, lúc dịch vụ hồi phục.
-- Nguyên nhân gốc, phân biệt rõ với triệu chứng bề mặt.
-- Điều đã làm đúng và điều làm chưa tốt.
-- RTO và RPO đo được.
-- Hành động khắc phục để lần sau không lặp lại.
-- Luật mới rút ra để thêm vào `triage.py`.
+- A few lines summarising the incident.
+- Real impact, with numbers from `probe.sh` rather than estimates.
+- Timeline: detected, work started, service restored.
+- Root cause, clearly separated from the surface symptom.
+- What went well and what did not.
+- Measured RTO and RPO.
+- Corrective actions so it cannot happen the same way again.
+- The new rule learned, to be added to `triage.py`.
 
-## Script vận hành
+## Operations scripts
 
-- `probe.sh` — gọi liên tục qua VIP, ghi timestamp, mã HTTP và thời gian, tính tổng thời gian gián đoạn.
-- `healthcheck.py` — chạy mỗi phút, kiểm VIP, stats HAProxy, health của từng web, replication, semi-sync, trạng thái chỉ đọc, NFS, disk và inode.
-- Cảnh báo Telegram phải chống spam: gom lỗi lặp, đặt thời gian chờ giữa hai lần báo, và báo khi đã hồi phục.
-- `diagnose.yml` — một lệnh thu thập toàn bộ bằng chứng về máy admin: `ss`, journal, `df -h`, `df -i`, trạng thái dịch vụ, log AVC.
-- `triage.py` — áp các luật rút từ postmortem lên dữ liệu chẩn đoán, in ra nghi vấn kèm lệnh kiểm tra tiếp theo.
-- `auto_remediate.sh` — chỉ xử lý lỗi an toàn như restart Nginx hoặc PHP-FPM, có giới hạn số lần mỗi giờ, có chế độ `--dry-run`, và **không bao giờ đụng vào MySQL**.
-- `db_failover.py` — hỗ trợ failover: kiểm tra điều kiện an toàn, bắt người vận hành xác nhận, rồi mới thao tác.
-- `order_writer.py` và `rpo_check.py` — tạo đơn liên tục và đối chiếu đơn đã xác nhận để đo RPO.
+- `probe.sh` — hits the VIP continuously, records timestamp, HTTP code and duration, and totals the outage time. Run from `mgmt01` so it takes the routed client path.
+- `healthcheck.py` — runs every minute and checks the VIP, HAProxy stats, each web node health, replication, semi-sync, read-only state, NFS, disk and inodes.
+- `healthcheck.py` must also check reachability of each zone gateway, so a router fault is reported as itself instead of as eight unrelated failures.
+- Telegram alerting must resist spam: group repeated errors, hold a cooldown between messages, and send a recovery notice.
+- `diagnose.yml` — one command that collects all evidence onto the admin box: `ss`, journal, `df -h`, `df -i`, service states, `ip route`, `nft list ruleset`, AppArmor denials.
+- `triage.py` — applies rules learned from postmortems to the diagnostic data and prints suspicions with the next command to run.
+- `auto_remediate.sh` — only handles safe faults such as restarting Nginx or PHP-FPM, with a per-hour limit, a `--dry-run` mode, and it **never touches MySQL**.
+- `db_failover.py` — assists a failover: checks the safety conditions, requires operator confirmation, and only then acts.
+- `order_writer.py` and `rpo_check.py` — create orders continuously and reconcile confirmed orders to measure RPO.
 
-## Phân định tự động và thủ công
+## Automatic versus manual
 
-- Tự động vì rủi ro thấp: chuyển VIP, loại web node lỗi, xoay vòng log, phát hiện disk và inode, gửi cảnh báo.
-- Con người quyết định vì rủi ro cao: promote database, mở quyền ghi, đưa primary cũ về làm replica, xử lý errant GTID, rollback cấu hình lớn, mọi thao tác động tới dữ liệu đơn hàng.
+- Automated because the risk is low: VIP movement, removing a failed web node, log rotation, disk and inode detection, sending alerts.
+- Left to a human because the risk is high: promoting a database, opening write access, returning an old primary as a replica, handling errant GTIDs, rolling back a large configuration change, anything touching order data.
+- Network changes sit with the human too: a bad route or firewall apply can lock everyone out of the lab.
 
 ## Load test
 
-- Kịch bản k6 mô phỏng xem trang chủ, xem sản phẩm và thêm vào giỏ hàng.
-- Đặt ngưỡng pass/fail cho p95 và tỷ lệ lỗi ngay trong kịch bản.
-- Chạy baseline với cấu hình mặc định trước, lưu kết quả lại.
-- Tuning **một biến mỗi lần** rồi chạy lại cùng kịch bản, để biết thay đổi nào thực sự có tác dụng.
-- Cuối cùng lập bảng so sánh trước và sau gồm p95, RPS và tỷ lệ lỗi kèm giải thích.
+- The k6 scenario simulates viewing the home page, viewing a product and adding to the cart.
+- Set pass/fail thresholds for p95 and error rate inside the scenario itself.
+- Run it from `mgmt01` in the client zone, so the measurement includes the routed hops a real user pays for.
+- Run a baseline with default configuration first and save the result.
+- Tune **one variable at a time** and rerun the same scenario, so it is clear which change actually helped.
+- Finish with a before-and-after table of p95, RPS and error rate, with an explanation.

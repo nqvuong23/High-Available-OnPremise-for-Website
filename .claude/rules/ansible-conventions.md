@@ -3,54 +3,63 @@ paths:
   - "ansible/**"
 ---
 
-# Chuẩn viết Ansible
+# Ansible standards
 
-> Chạy trên `mgmt01` (Debian 13, Python 3.13) trong virtualenv. Tiêu chí nghiệm thu gắt nhất: `site.yml` chạy lần hai báo `changed=0`.
+> Runs on `mgmt01` (Debian 13.7, Python 3.13) inside a virtualenv. The strictest acceptance criterion: `site.yml` reports `changed=0` on the second run.
 
-## Môi trường
+## Environment
 
-- ansible-core 2.20.x cài trong virtualenv; Debian 13 chặn `pip` vào Python hệ thống theo PEP 668.
-- Control node cần Python từ 3.12 trở lên; node Rocky 9 dùng Python 3.9 vẫn hợp lệ ở vai trò máy được quản lý.
-- Collections ghim phiên bản trong `requirements.yml`: `community.mysql`, `ansible.posix`, `community.general`, `community.crypto`.
-- Đặt `ANSIBLE_CONFIG` tường minh để chắc chắn `ansible.cfg` được đọc.
+- ansible-core 2.20.x installed in a virtualenv; Debian 13.7 blocks `pip` into the system Python under PEP 668.
+- The control node needs Python 3.12 or newer. Managed nodes run Ubuntu 24.04 with Python 3.12.3, which is fine.
+- Pin collection versions in `requirements.yml`: `community.mysql`, `ansible.posix`, `community.general`, `community.crypto`.
+- Set `ANSIBLE_CONFIG` explicitly so there is no doubt which `ansible.cfg` is read.
 
-## Cấu trúc
+## Connectivity
 
-- Mỗi role có đủ `defaults/`, `tasks/`, `templates/`, `handlers/`.
-- Role xử lý nhiều hệ điều hành thì tách `tasks/RedHat.yml` và `tasks/Debian.yml`, chọn theo `ansible_os_family`.
-- `site.yml` gọi role đúng thứ tự phụ thuộc: common → nfs → mysql → web → haproxy → keepalived.
-- Inventory nhóm hai chiều: theo vai trò (`lb`, `web`, `db`, `nfs`) và theo họ phân phối (`rocky`, `ubuntu`).
-- Biến dùng ở nhiều nơi như VIP, domain, UID/GID chỉ được định nghĩa **một lần** trong `group_vars`.
+- Ansible reaches managed nodes over their zone NIC, routed through `router01`. `mgmt01` needs static routes to all three lab zones.
+- Before the NAT NICs are removed, Ansible may still be reaching nodes over NAT. Verify with `ansible all -m setup -a 'filter=ansible_default_ipv4'` that the path is the intended one, since a working ping over the wrong NIC hides a broken route.
+- `ansible_host` must be the zone IP, never the NAT IP, so the inventory stays valid after NAT removal.
+
+## Structure
+
+- Every role has `defaults/`, `tasks/`, `templates/` and `handlers/` as needed.
+- One distro family means no `tasks/RedHat.yml` and `tasks/Debian.yml` split; keep a single task path and do not add per-OS branching for a case that cannot occur.
+- `mgmt01` is the only Debian host and is the control node, so no role targets it.
+- `site.yml` calls roles in dependency order: router -> common -> nfs -> mysql -> mysqlchk -> web -> haproxy -> keepalived.
+- `router01` must be configured before any role that depends on cross-zone reachability.
+- Group the inventory two ways: by role (`router`, `lb`, `web`, `db`, `nfs`) and by zone (`dmz`, `app`, `dbzone`, `client`).
+- Variables used in more than one place, such as the VIP, the domain, the zone subnets, the gateway octet and UID/GID, are defined **once** in `group_vars`.
 
 ## Idempotency
 
-- Ưu tiên module chuẩn với tên đầy đủ (FQCN) thay cho `shell` và `command`.
-- Bắt buộc dùng `command` thì phải khai báo `changed_when` hoặc `creates` để không báo changed giả.
-- Nghiệm thu bằng cách chạy `site.yml` lần hai; còn `changed` ở đâu thì sửa task ở đó.
-- Dùng `ansible-playbook site.yml --check --diff` để phát hiện cấu hình bị sửa tay trên node.
+- Prefer standard modules with their fully qualified name over `shell` and `command`.
+- When `command` is unavoidable, declare `changed_when` or `creates` so it cannot report a false change.
+- Verify by running `site.yml` a second time; wherever a `changed` remains, fix that task.
+- Use `ansible-playbook site.yml --check --diff` to detect configuration edited by hand on a node.
+- Routing and firewall tasks are the usual source of false changes; use `community.general.ufw` and template-plus-validate for nftables, and compare current state before writing.
 
-## An toàn khi áp dụng cấu hình
+## Safe configuration changes
 
-- Mọi template cấu hình phải có `validate:` hoặc handler kiểm tra cú pháp trước khi reload dịch vụ.
-- Ví dụ: `nginx -t` cho Nginx, `haproxy -c -f %s` cho HAProxy, `visudo -cf %s` cho sudoers, `mysqld --validate-config` cho MySQL.
-- Không bao giờ reload hay restart một dịch vụ khi file cấu hình chưa qua bước kiểm tra cú pháp.
+- Every config template must have a `validate:` or a handler that checks syntax before the service reloads.
+- Examples: `nginx -t` for Nginx, `haproxy -c -f %s` for HAProxy, `visudo -cf %s` for sudoers, `mysqld --validate-config` for MySQL, `nft -c -f %s` for nftables.
+- Never reload or restart a service whose config file has not passed a syntax check.
+- Network changes are the dangerous class: a bad netplan or nftables apply can lock Ansible out. Stage them so the previous state is restored if connectivity is lost.
 
-## Secret
+## Secrets
 
-- Mật khẩu database, token Telegram, khoá riêng CA đều nằm trong Ansible Vault.
-- Quy ước đặt tên biến bắt đầu bằng `vault_` để nhìn template là biết đâu là secret.
-- File vault password để ngoài repo với quyền 600; không bao giờ commit.
-- Dùng `no_log: true` cho task có khả năng in secret ra log.
-- Mật khẩu VRRP bị giao thức giới hạn tối đa 8 ký tự, cắt sẵn từ lúc sinh cho khỏi lỗi khó hiểu.
+- Database passwords, the Telegram token and the CA private key all live in Ansible Vault.
+- Name secret variables with a `vault_` prefix so a template makes it obvious which values are secret.
+- Keep the vault password file outside the repo with mode 600; never commit it.
+- Use `no_log: true` on any task that could print a secret.
+- The VRRP password is limited to 8 characters by the protocol; generate it already truncated to avoid a confusing failure.
 
-## Chất lượng
+## Quality
 
-- Chạy `ansible-lint` ở profile `production` trước khi commit.
-- Mọi task phải có `name` mô tả rõ việc nó làm.
-- Commit nhỏ, thông điệp nêu rõ role nào thay đổi và vì sao.
+- Run `ansible-lint` at the `production` profile before committing.
+- Every task needs a `name` that clearly states what it does, in English and imperative mood; see `code-style.md`.
+- Small commits, with a message naming the role that changed and why.
 
-## Thư viện cần có trên node đích
+## Required libraries on managed nodes
 
-- Node DB cần `PyMySQL` thì module `community.mysql` mới chạy được.
-- Node Rocky cần `python3-libselinux` cho các module SELinux.
-- Cài các phụ thuộc này ngay trong role tương ứng, không giả định box đã có sẵn.
+- DB nodes need `PyMySQL` before `community.mysql` modules will work.
+- Install those dependencies inside the matching role; never assume the box already has them.

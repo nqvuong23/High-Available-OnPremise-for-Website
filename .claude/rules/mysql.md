@@ -6,73 +6,81 @@ paths:
   - "docs/runbooks/**"
 ---
 
-# MySQL 8.4: replication, semi-sync và failover
+# MySQL 8.4: replication, semi-sync and failover
 
-> Đây là tầng giữ dữ liệu tiền bạc. Mọi thao tác ở đây ưu tiên an toàn hơn tốc độ.
+> This layer holds the money data. Every decision here favours safety over speed.
+> Both DB nodes run Ubuntu 24.04 in the db zone, `192.168.30.11` and `192.168.30.12`.
 
-## Quy tắc an toàn bắt buộc
+## Mandatory safety rules
 
-- **Không bao giờ tự động failover.** Mọi thao tác promote phải có người xác nhận tường minh.
-- **Không bao giờ để hai node cùng writable.** Trước khi promote phải chắc chắn primary cũ đã chết hoặc đã bị tắt.
-- Mọi node luôn khởi động với `super_read_only=ON`; quyền ghi chỉ được mở ở runtime.
-- Trước khi cho primary cũ quay lại làm replica, **bắt buộc kiểm tra errant GTID** bằng `GTID_SUBTRACT`.
-- Semi-sync có thể tự hạ xuống async khi replica chết quá timeout; phải giám sát `Rpl_semi_sync_source_status`, nếu không thì lời hứa RPO bằng 0 không còn đúng.
-- Script `auto_remediate.sh` tuyệt đối không được tự restart hay can thiệp vào MySQL.
+- **Never fail over automatically.** Every promote requires explicit human confirmation.
+- **Never let both nodes be writable.** Before promoting, be certain the old primary is dead or powered off.
+- Every node always boots with `super_read_only=ON`; write access is only opened at runtime.
+- Before letting an old primary rejoin as a replica, **always check for errant GTIDs** with `GTID_SUBTRACT`.
+- Semi-sync can silently downgrade to async when the replica is gone past the timeout; monitor `Rpl_semi_sync_source_status`, otherwise the RPO=0 promise no longer holds.
+- `auto_remediate.sh` must never restart or otherwise touch MySQL.
 
-## Cài đặt trên Rocky 9
+## Installation on Ubuntu 24.04
 
-- Chạy `dnf module disable -y mysql` trước, vì module AppStream mặc định xung đột với repo chính thức.
-- Thêm repo `mysql84-lts-community` của Oracle rồi cài gói `mysql-community-server`.
-- Cài `python3-PyMySQL` để module `community.mysql` hoạt động.
-- Bootstrap: đọc mật khẩu tạm trong `/var/log/mysqld.log`, đổi sang mật khẩu lấy từ Vault, ghi `/root/.my.cnf` quyền 600.
+- Ubuntu 24.04 ships MySQL 8.0 in its own repository. Hold or avoid that package so apt cannot pull it in instead of 8.4.
+- Add the official Oracle APT repository for the `mysql-8.4-lts` track, install its signing key, then install `mysql-community-server`.
+- Install `python3-pymysql` so `community.mysql` modules work.
+- Bootstrap: Debian-family packages start MySQL with an empty root password over the unix socket rather than writing a temporary password to the log. Set the password from Vault on first run and write `/root/.my.cnf` with mode 600.
+- The Debian-family package also installs its own `debian.cnf` maintenance account; keep it consistent with the Vault password or maintenance scripts will fail after a password change.
+- AppArmor confines `mysqld` through `/etc/apparmor.d/usr.sbin.mysqld`. Any datadir or log path moved outside the default needs an AppArmor rule, or startup fails with a permission error that looks nothing like a permission problem.
 
-## Cấu hình cốt lõi
+## Core configuration
 
-- Định danh và binlog: `server_id` khác nhau giữa hai node, bật `log_bin`, `binlog_format=ROW`.
-- GTID: `gtid_mode=ON` và `enforce_gtid_consistency=ON`.
-- Độ bền dữ liệu: `sync_binlog=1` và `innodb_flush_log_at_trx_commit=1`, không được hạ xuống để lấy hiệu năng.
-- Chỉ đọc khi boot: `read_only=ON` và `super_read_only=ON` đặt trong file cấu hình của **cả hai** node.
-- Khác: `relay_log_recovery=ON`, `skip_name_resolve`, `event_scheduler=ON` cho heartbeat.
-- Kích thước buffer pool đặt khoảng một nửa RAM của node, tức khoảng 768 MB với node 1536 MB.
+- Identity and binlog: a distinct `server_id` on each node, `log_bin` on, `binlog_format=ROW`.
+- GTID: `gtid_mode=ON` and `enforce_gtid_consistency=ON`.
+- Durability: `sync_binlog=1` and `innodb_flush_log_at_trx_commit=1`, never lowered for performance.
+- Read-only at boot: `read_only=ON` and `super_read_only=ON` in the config file of **both** nodes.
+- Others: `relay_log_recovery=ON`, `skip_name_resolve`, `event_scheduler=ON` for the heartbeat.
+- `bind_address` listens on the zone IP and loopback only; nothing binds the NAT NIC.
+- Buffer pool around half the node RAM, so roughly 768 MB on a 1536 MB node.
 
 ## Semi-sync
 
-- Nạp plugin bằng `plugin_load_add` với `semisync_source.so` và `semisync_replica.so`.
-- Bật **cả hai** vai trò trên **cả hai** node để lúc đổi vai không phải cài thêm plugin.
-- Đặt `rpl_semi_sync_source_wait_point=AFTER_SYNC` và `rpl_semi_sync_source_timeout=3000`.
-- Kiểm chứng: `Rpl_semi_sync_source_status` phải `ON` và `Rpl_semi_sync_source_clients` phải bằng 1.
+- Load the plugins with `plugin_load_add` for `semisync_source.so` and `semisync_replica.so`.
+- Enable **both** roles on **both** nodes so a role swap needs no extra plugin install.
+- Set `rpl_semi_sync_source_wait_point=AFTER_SYNC` and `rpl_semi_sync_source_timeout=3000`.
+- Verify: `Rpl_semi_sync_source_status` must be `ON` and `Rpl_semi_sync_source_clients` must be 1.
 
-## Cú pháp MySQL 8.4
+## MySQL 8.4 syntax
 
-- Các lệnh sau **đã bị gỡ** và sẽ báo lỗi cú pháp: `CHANGE MASTER TO`, `START SLAVE`, `STOP SLAVE`, `SHOW SLAVE STATUS`, `RESET MASTER`, `SHOW MASTER STATUS`, các tham số `MASTER_*`, và `IGNORE_SERVER_IDS`.
-- Thay bằng: `CHANGE REPLICATION SOURCE TO` với các tham số `SOURCE_*`, `START REPLICA`, `STOP REPLICA`, `SHOW REPLICA STATUS`, `RESET BINARY LOGS AND GTIDS`, `SHOW BINARY LOG STATUS`.
-- Xác thực mặc định là `caching_sha2_password`, còn `mysql_native_password` đã tắt mặc định.
-- User replication vì thế cần `GET_SOURCE_PUBLIC_KEY=1` hoặc phải bật TLS.
+- These statements are **removed** and will raise a syntax error: `CHANGE MASTER TO`, `START SLAVE`, `STOP SLAVE`, `SHOW SLAVE STATUS`, `RESET MASTER`, `SHOW MASTER STATUS`, the `MASTER_*` options, and `IGNORE_SERVER_IDS`.
+- Use instead: `CHANGE REPLICATION SOURCE TO` with `SOURCE_*` options, `START REPLICA`, `STOP REPLICA`, `SHOW REPLICA STATUS`, `RESET BINARY LOGS AND GTIDS`, `SHOW BINARY LOG STATUS`.
+- Default authentication is `caching_sha2_password`; `mysql_native_password` is disabled by default.
+- The replication user therefore needs `GET_SOURCE_PUBLIC_KEY=1`, or TLS must be enabled.
 
-## Tài khoản
+## Accounts
 
-- User ứng dụng, user replication và user vận hành đều GRANT theo dải `10.10.10.%` hoặc đúng hai IP của LB.
-- Lý do: kết nối đi qua HAProxy nên MySQL thấy IP nguồn là IP của LB, không phải IP web node.
-- User của `mysqlchk` chỉ cần quyền đọc biến trạng thái và nên giới hạn ở `localhost`.
+- The application user, the replication user and the operator user are granted on `192.168.10.%` or on exactly the two LB addresses `192.168.10.11` and `192.168.10.12`.
+- Reason: connections pass through HAProxy, so MySQL sees the LB IP as the source, not the web node IP and not the VIP.
+- Do **not** grant the application user on `192.168.20.%`. Web nodes never connect directly; if that grant makes things work, the traffic is bypassing the LB and the design is broken.
+- The replication user is granted between the two db-zone addresses, since replication stays inside the db zone.
+- The `mysqlchk` user only needs to read status variables and should be limited to `localhost`.
 
 ## mysqlchk
 
-- Lắng nghe cổng 9200, trả HTTP 200 khi node writable và 503 khi node đang chỉ đọc.
-- Điều kiện để trả 200: cả `@@read_only` và `@@super_read_only` đều bằng 0.
-- Triển khai bằng systemd socket cho nhẹ; không cần cài thêm web server.
-- Trên Rocky phải khai báo nhãn SELinux cho cổng 9200 bằng `semanage port`.
+- Listens on port 9200, returns HTTP 200 when the node is writable and 503 when it is read-only.
+- Condition for a 200: both `@@read_only` and `@@super_read_only` are 0.
+- Implement it with a systemd socket unit to keep it light; no web server needed.
+- Port 9200 must be open to the two LB addresses only, and never on the NAT NIC.
 
-## Nghiệm thu
+## Acceptance
 
-- Ghi trên primary rồi đọc được trên replica.
-- Ghi thẳng vào replica phải bị từ chối với lỗi 1290.
-- `SHOW REPLICA STATUS` cho `Replica_IO_Running` và `Replica_SQL_Running` đều `Yes`.
-- Reboot từng node DB, cả hai phải quay lại ở trạng thái chỉ đọc.
-- `curl localhost:9200` trả 200 trên primary và 503 trên replica.
+- Write on the primary, then read it on the replica.
+- A direct write to the replica must be refused with error 1290.
+- `SHOW REPLICA STATUS` shows `Replica_IO_Running` and `Replica_SQL_Running` both `Yes`.
+- Reboot each DB node; both must come back read-only.
+- `curl localhost:9200` returns 200 on the primary and 503 on the replica.
+- From a web node, `mysql -h 192.168.10.100` connects, while `mysql -h 192.168.30.11` is blocked by the firewall.
 
-## Diễn tập failover
+## Failover drills
 
-- Chạy `order_writer.py` tạo đơn liên tục, chỉ ghi ID vào log **sau khi** commit thành công.
-- Tắt cứng VM primary bằng `vagrant halt --force db01` để mô phỏng chết đột ngột.
-- Làm theo runbook RB-02, bấm giờ để lấy RTO, rồi chạy `rpo_check.py` để lấy RPO.
-- Lặp lại tối thiểu 3 lần với semi-sync, và thêm một lần với async để có bảng so sánh.
+- Run `order_writer.py` to create orders continuously, logging an ID only **after** the commit succeeds.
+- Hard power off the primary VM with `vagrant halt --force db01` to simulate sudden death.
+- Follow runbook RB-02, time it to get the RTO, then run `rpo_check.py` to get the RPO.
+- Repeat at least 3 times with semi-sync, plus one run with async to build the comparison table.
+- Note in each postmortem whether the router was in the path for that drill, since two routed hops are part of the measured RTO.
