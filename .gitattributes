@@ -1,5 +1,5 @@
-# Repo được sửa từ Windows nhưng chạy trên Linux.
-# Ép LF để script không dính CRLF gây lỗi "bad interpreter: /bin/bash^M".
+# Edited on Windows, executed on Linux.
+# Force LF so no script hits "bad interpreter: /bin/bash^M" from CRLF.
 * text=auto eol=lf
 
 *.sh   text eol=lf

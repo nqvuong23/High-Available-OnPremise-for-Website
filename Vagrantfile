@@ -14,8 +14,7 @@ IPV4_CIDR             = 24
 MAC_PREFIX            = "00:50:56"
 GATEWAY_OCTET         = 254
 LAB_ROUTE_METRIC      = 600
-ROUTER_NAME           = "router01"
-NAT_SUBNET            = "10.10.10.0/24"
+ROUTER_NAME           = "fw01"
 
 ZONES = [
   { name: "dmz",    subnet: "192.168.10.0/24" },
@@ -25,6 +24,7 @@ ZONES = [
 ]
 
 NODES = [
+  { name: "fw01",     mem: 512,  cpus: 2, ips: ["192.168.10.254", "192.168.20.254", "192.168.30.254", "172.16.10.254"] },
   { name: "lb01",     mem: 512,  cpus: 1, ips: ["192.168.10.11"] },
   { name: "lb02",     mem: 512,  cpus: 1, ips: ["192.168.10.12"] },
   { name: "web01",    mem: 1024, cpus: 2, ips: ["192.168.20.11"] },
@@ -32,7 +32,8 @@ NODES = [
   { name: "nfs01",    mem: 512,  cpus: 1, ips: ["192.168.20.21"] },
   { name: "db01",     mem: 1536, cpus: 2, ips: ["192.168.30.11"] },
   { name: "db02",     mem: 1536, cpus: 2, ips: ["192.168.30.12"] },
-  { name: "router01", mem: 512,  cpus: 1, ips: ["192.168.10.254", "192.168.20.254", "192.168.30.254", "172.16.10.254"] },
+  { name: "mgmt01",   mem: 1024, cpus: 2, ips: ["172.16.10.11"] },
+  { name: "mon01",    mem: 2048, cpus: 2, ips: ["172.16.10.21"] },
 ]
 
 def lab_mac(ip, idx)
@@ -51,7 +52,7 @@ end
 def lab_routes(ip)
   gateway = lab_gateway(ip)
 
-  # router01 owns .254 in every zone, so it must not route through itself
+  # fw01 owns .254 in every zone, so it must not route through itself
   return [] if gateway == ip
 
   routes = [{ "to" => "default", "via" => gateway, "metric" => LAB_ROUTE_METRIC }]
@@ -131,7 +132,7 @@ Vagrant.configure("2") do |config|
         sleep 2
       SHELL
 
-      # Minimum forwarding so Ansible can reach every zone; role router owns the real policy
+      # Minimum forwarding so Ansible can reach every zone; role firewall owns the real policy
       if node[:name] == ROUTER_NAME
         m.vm.provision "shell", name: "router-forwarding", inline: <<~SHELL
           set -eu

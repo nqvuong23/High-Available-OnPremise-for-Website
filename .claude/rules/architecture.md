@@ -13,16 +13,18 @@ paths:
 
 ```
 CLIENT / ADMIN ZONE  vmnet4  172.16.10.0/24
-  mgmt01 172.16.10.11  Debian 13.7, Ansible + k6 + scripts, keeps its NAT NIC
+  mgmt01 172.16.10.11  Ansible + k6 + scripts, keeps its NAT NIC
+  mon01  172.16.10.21  Prometheus + Loki + Grafana + Alertmanager
   Windows host adapter 172.16.10.1
-  shop.lab.internal -> 192.168.10.100
+  shop.lab.internal -> 192.168.10.100 (from bind9 on fw01)
                                 |
                                 | default route via 172.16.10.254
                                 v
   +-------------------------------------------------------------------+
-  | router01   Ubuntu 24.04, kernel forwarding + nftables             |
+  | fw01   Ubuntu 24.04, kernel forwarding + nftables                 |
   |   172.16.10.254   192.168.10.254   192.168.20.254  192.168.30.254 |
   |   plus a permanent NAT NIC on vmnet8, masquerades for every zone  |
+  |   also serves chrony NTP and bind9 DNS to all four zones          |
   +----+---------------------+------------------------+---------------+
        |                     |                        |
 DMZ ZONE vmnet1        APP ZONE vmnet2           DB ZONE vmnet3
@@ -40,24 +42,28 @@ DMZ ZONE vmnet1        APP ZONE vmnet2           DB ZONE vmnet3
                              |      +-----------+     |  200 = writable, 503 = ro
 ```
 
-- Every arrow that crosses a zone boundary passes through `router01`. Only VRRP, web to NFS and db01 to db02 stay inside one zone.
-- All 8 lab VMs also carry a temporary NAT NIC during provisioning, removed at the end of M1.
+- Every arrow that crosses a zone boundary passes through `fw01`. Only VRRP, web to NFS and db01 to db02 stay inside one zone.
+- Every lab VM also carries a temporary NAT NIC during provisioning, removed at the end of M1. `fw01`, `mgmt01` and `mon01` keep theirs.
+- 10 VMs in total. `mgmt01` and `mon01` share the client zone but do different jobs on purpose: the load generator must not share a machine with the measuring instrument. See ADR-24.
 
 ## Data flows
 
-- F1 — user request: client -> VIP:443 on the MASTER node -> HAProxy terminates TLS -> `be_web` roundrobin with a sticky cookie -> Nginx:80 -> PHP-FPM over a unix socket. Crosses dmz to app through `router01`.
+- F1 — user request: client -> VIP:443 on the MASTER node -> HAProxy terminates TLS -> `be_web` roundrobin with a sticky cookie -> Nginx:80 -> PHP-FPM over a unix socket. Crosses dmz to app through `fw01`.
 - F2 — file upload: Nginx or PHP-FPM reads `/var/www/wordpress/wp-content/uploads`, mounted from nfs01:2049 inside the app zone.
 - F3 — database query: PHP-FPM -> VIP:3306 -> the HAProxy `listen mysql` section in TCP mode -> the writable MySQL node. Crosses app to dmz and then dmz to db, two router hops.
 - F4 — replication: db01:3306 -> db02 inside the db zone, the IO thread pulls the binlog, semi-sync waits for the replica to acknowledge receipt.
 - F5 — VRRP: lb01 and lb02 over multicast 224.0.0.18, IP protocol 112, advertising every second. Link-local, so it never reaches the router.
 - F6 — health checks: HAProxy calls `/healthz.php` on web:80 and `mysqlchk` on db:9200, both across zones.
 - F7 — administration: mgmt01 -> port 22 on every node, -> port 8404 on the LBs for stats, -> port 3306 on the DBs for monitoring. All routed from the client zone.
-- F8 — internet egress: a lab node -> its zone gateway `.254` -> `router01` masquerade -> vmnet8 NAT -> internet. This is the only path left after the NAT NICs are removed.
+- F8 — internet egress: a lab node -> its zone gateway `.254` -> `fw01` masquerade -> vmnet8 NAT -> internet. This is the only path left after the NAT NICs are removed.
+- F9 — time and name: every node -> its own zone `.254`, UDP 123 to chrony and port 53 to bind9. Addressed to the router itself, so it terminates there rather than being forwarded.
+- F10 — metric scrape: mon01 -> every node's exporter ports, pull-based, routed out of the client zone into each of the other three.
+- F11 — log shipping: Grafana Alloy on every node -> mon01:3100 into Loki. Push-based, so it runs in the opposite direction to F10.
 
 ## Reading a product page
 
 - The browser resolves `shop.lab.internal` to `192.168.10.100` from the hosts file.
-- The request leaves the client zone, `router01` forwards it into the dmz zone.
+- The request leaves the client zone, `fw01` forwards it into the dmz zone.
 - The node holding the VIP accepts the TLS connection at HAProxy and decrypts it.
 - HAProxy picks a web node that is UP and adds `X-Forwarded-For` and `X-Forwarded-Proto: https`.
 - Nginx serves static files from NFS and passes `.php` over the socket to PHP-FPM.
@@ -102,10 +108,19 @@ db02  REPLICA  super_read_only=ON        db02  PRIMARY  read_only=OFF, no replic
 
 ## Easy to get wrong: the router is in the write path
 
-- Because the VIP lives in the dmz zone, a web-to-DB query crosses `router01` twice.
-- That means `router01` is a SPOF for order writes, not just for administration.
+- Because the VIP lives in the dmz zone, a web-to-DB query crosses `fw01` twice.
+- That means `fw01` is a SPOF for order writes, not just for administration.
 - It also means DB latency includes two routed hops, which must be visible in the k6 baseline.
 - Both facts belong in the known limitations list, not hidden.
+
+## Easy to get wrong: fw01 is in the monitoring path
+
+- `mon01` lives in the client zone, so every scrape in F10 and every log push in F11 crosses `fw01`.
+- If `fw01` dies, monitoring goes blind and **cannot alert on the thing that died**. The classic who-watches-the-watcher problem.
+- It also means a `fw01` outage looks identical to every node dying at once, because all targets go unreachable together. Read that pattern as a routing failure, not as ten simultaneous host failures.
+- `fw01` now also serves DNS and NTP, so its death takes name resolution and clock sync with it. Those are separate failure domains in a real deployment and are deliberately collapsed here.
+- The second vantage point is `healthcheck.py` running locally on each node, which keeps working when the router does not.
+- All of this belongs in the known limitations list, not hidden.
 
 ## Easy to get wrong: default route versus zone routes
 

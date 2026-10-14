@@ -5,18 +5,18 @@ paths:
 
 # Ansible standards
 
-> Runs on `mgmt01` (Debian 13.7, Python 3.13) inside a virtualenv. The strictest acceptance criterion: `site.yml` reports `changed=0` on the second run.
+> Runs on `mgmt01` (Ubuntu 24.04, Python 3.12.3) inside a virtualenv. The strictest acceptance criterion: `site.yml` reports `changed=0` on the second run.
 
 ## Environment
 
-- ansible-core 2.20.x installed in a virtualenv; Debian 13.7 blocks `pip` into the system Python under PEP 668.
-- The control node needs Python 3.12 or newer. Managed nodes run Ubuntu 24.04 with Python 3.12.3, which is fine.
+- ansible-core 2.20.x installed in a virtualenv; Ubuntu 24.04 blocks `pip` into the system Python under PEP 668.
+- The control node needs Python 3.12 or newer. Ubuntu 24.04 ships 3.12.3, which clears that by one minor version — close to the floor, so check the requirement before upgrading ansible-core. Managed nodes run the same 3.12.3.
 - Pin collection versions in `requirements.yml`: `community.mysql`, `ansible.posix`, `community.general`, `community.crypto`.
 - Set `ANSIBLE_CONFIG` explicitly so there is no doubt which `ansible.cfg` is read.
 
 ## Connectivity
 
-- Ansible reaches managed nodes over their zone NIC, routed through `router01`. `mgmt01` needs static routes to all three lab zones.
+- Ansible reaches managed nodes over their zone NIC, routed through `fw01`. `mgmt01` needs static routes to all three lab zones.
 - Before the NAT NICs are removed, Ansible may still be reaching nodes over NAT. Verify with `ansible all -m setup -a 'filter=ansible_default_ipv4'` that the path is the intended one, since a working ping over the wrong NIC hides a broken route.
 - `ansible_host` must be the zone IP, never the NAT IP, so the inventory stays valid after NAT removal.
 
@@ -24,10 +24,11 @@ paths:
 
 - Every role has `defaults/`, `tasks/`, `templates/` and `handlers/` as needed.
 - One distro family means no `tasks/RedHat.yml` and `tasks/Debian.yml` split; keep a single task path and do not add per-OS branching for a case that cannot occur.
-- `mgmt01` is the only Debian host and is the control node, so no role targets it.
-- `site.yml` calls roles in dependency order: router -> common -> nfs -> mysql -> mysqlchk -> web -> haproxy -> keepalived.
-- `router01` must be configured before any role that depends on cross-zone reachability.
-- Group the inventory two ways: by role (`router`, `lb`, `web`, `db`, `nfs`) and by zone (`dmz`, `app`, `dbzone`, `client`).
+- `mgmt01` is the control node and configures itself, so keep whatever targets it in a separate play rather than in `site.yml`'s managed-node run.
+- `site.yml` calls roles in dependency order: firewall -> common -> nfs -> mysql -> mysqlchk -> web -> haproxy -> keepalived -> monitoring.
+- `fw01` must be configured before any role that depends on cross-zone reachability, and now also before anything that needs DNS or NTP, because it serves both.
+- Monitoring runs last: `monitoring_agent` on every managed node, `monitoring_server` on `mon01`.
+- Group the inventory two ways: by role (`firewall`, `lb`, `web`, `db`, `nfs`, `mon`) and by zone (`dmz`, `app`, `dbzone`, `client`).
 - Variables used in more than one place, such as the VIP, the domain, the zone subnets, the gateway octet and UID/GID, are defined **once** in `group_vars`.
 
 ## Idempotency

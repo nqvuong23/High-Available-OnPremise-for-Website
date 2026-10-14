@@ -34,8 +34,8 @@ paths:
 
 ## Cross-zone considerations
 
-- Both backends are in other zones, so every health check and every proxied connection is forwarded by `router01`.
-- If `router01` is down, HAProxy marks every backend DOWN and the stats page shows a total outage that is actually a routing failure. Check the route before suspecting the backends.
+- Both backends are in other zones, so every health check and every proxied connection is forwarded by `fw01`.
+- If `fw01` is down, HAProxy marks every backend DOWN and the stats page shows a total outage that is actually a routing failure. Check the route before suspecting the backends.
 - Connection timeouts must allow for the extra routed hops; do not tune them so tight that a normal router hop looks like a failure.
 - The web-to-DB path enters HAProxy from the app zone and leaves towards the db zone, so `listen mysql` must accept connections sourced from `192.168.20.%`.
 
@@ -74,4 +74,4 @@ paths:
 - From `mgmt01`, connect with `mysql -h 192.168.10.100` and confirm it is talking to the current primary.
 - Run a continuous probe or k6, stop HAProxy on lb01, measure how long the VIP takes to move and count failed requests.
 - Start HAProxy on lb01 again and watch it take the VIP back through preempt, recording the second short interruption.
-- Confirm `router01` is not in the VRRP path: stopping the router must not move the VIP, though it will mark the backends DOWN.
+- Confirm `fw01` is not in the VRRP path: stopping the router must not move the VIP, though it will mark the backends DOWN.

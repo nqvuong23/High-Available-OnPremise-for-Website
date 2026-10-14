@@ -7,7 +7,7 @@ paths:
 # Building the lab with Vagrant and VMware
 
 > `vagrant` runs **only in Windows PowerShell** at the repo root. `mgmt01` never drives the hypervisor.
-> `mgmt01` is installed by hand from the Debian 13.7 ISO and is not in the `Vagrantfile`; only the 8 lab VMs are.
+> All 10 VMs are declared in the `Vagrantfile`, `mgmt01` and `mon01` included. Nothing is installed by hand.
 
 ## Software on the Windows host
 
@@ -18,8 +18,8 @@ paths:
 
 ## Boxes
 
-- `bento/ubuntu-24.04` for all 8 lab VMs, pinned to `202510.26.0`. `mgmt01` uses no box: it is installed from the Debian 13.7 netinst ISO.
-- One distro family for the lab keeps the Ansible roles single-path; see ADR-13.
+- `bento/ubuntu-24.04` for all 10 VMs, pinned to `202510.26.0`. There is no second box and no ISO install.
+- One distro family keeps the Ansible roles single-path; see ADR-13 and ADR-15.
 - Always add a box with `--provider vmware_desktop --architecture amd64`; without those flags it reports that the box has no such provider.
 - Download boxes before `vagrant up` so a network failure cannot be mistaken for a build failure.
 
@@ -35,28 +35,35 @@ Create these in Virtual Network Editor before the first `vagrant up`:
 - Apply, then wait for the Windows adapters to pick up their new `<subnet>.1` address.
 - Delete any VMnet outside this plan. Leftovers occupy subnets and give the provider a wrong candidate to pick.
 
-## Why VMnets must be pinned explicitly
+## How a NIC finds its zone
 
-- `vagrant-vmware-desktop` picks a VMnet by **matching subnets**: it reads the VMnet list and looks for a device whose `hostonly_subnet` matches the IP being requested.
-- If none matches, it silently creates a **new** VMnet with DHCP enabled. That is where stray VMnets come from.
-- Subnet matching means the VMnet number depends on the creation order in Virtual Network Editor, not on the `Vagrantfile`.
-- Pinning `ethernetN.vnet` in the `.vmx` makes every rebuild land on the same VMnet.
-- The provider action order is `Network -> VMXModify -> Boot`. `Network` writes the `.vmx` from subnet matching, `VMXModify` writes the `v.vmx[...]` values over it, then it boots. So the `v.vmx["ethernetN.vnet"]` block is the last word before the VM starts.
-- Pinning the VMnet guarantees the right wire, not the right subnet on that wire. Verify both: read each Windows host adapter address and compare it with the plan. A VM on the correct VMnet carrying an address from a subnet that no longer exists there boots fine and simply cannot ping.
+The provider chooses the VMnet, and a deterministic MAC address decides which address lands on which NIC. See ADR-20 for why it is done this way.
+
+- `vagrant-vmware-desktop` picks a VMnet by **matching subnets**: it reads the VMnet list and looks for a device whose `hostonly_subnet` matches the IP being requested. The host VMnet layout from the previous section is what makes this land correctly.
+- If no VMnet matches, it silently creates a **new** one with DHCP enabled. That is where stray VMnets come from, and it is a silent success rather than an error, so check Virtual Network Editor after the first build.
+- Subnet matching means the VMnet number depends on the creation order in Virtual Network Editor, not on the `Vagrantfile`. The `Vagrantfile` does not care, because it never names a VMnet.
+- The real hazard is **inside** the guest: Workstation reassigns PCI slots between rebuilds, so interface names like `ens33` shift and any config written against a name ends up on the wrong zone.
+- The fix is to generate each MAC from the node index and the host octet, write it into the `.vmx` with the `mac:` option, and have netplan select the interface with `match: { macaddress: ... }`. The interface name then stops mattering entirely.
+- Consequence worth knowing: the netplan keys (`interface0`, `interface1`) are arbitrary identifiers, not device names. Do not expect to find them in `ip link` output.
+- Verify the wire **and** the subnet on it. Read each Windows host adapter address and compare it with the plan. A VM on the right VMnet carrying an address from a subnet that no longer exists there boots fine and simply cannot ping.
 
 ## Vagrantfile conventions
 
-- Declare the zones in one table of subnet and VMnet, and the nodes in one array of name, memory, vCPU and per-zone host octet, so the plan changes in a single place.
-- Validate the plan before the provider touches the hypervisor: duplicate IPs, an unknown zone, use of `.1` or `.100`, or two zones sharing a VMnet must abort the run.
+- Declare the zones in one table of name and subnet, and the nodes in one array of name, memory, vCPU and full zone addresses, so the plan changes in a single place.
+- Derive everything else from that array: MAC, gateway, zone subnet, routes and the netplan document. No per-node special cases.
+- Validate the plan before the provider touches the hypervisor: duplicate IPs, an unknown zone, or use of `.1` or `.100` must abort the run. **Not implemented yet.**
+- Abort with a clear message if `vagrant-provision/ansible-key.pub` is missing, because every node's provisioning depends on it. **Not implemented yet.**
 - Set resources with `v.vmx["memsize"]` and `v.vmx["numvcpus"]`.
-- Declare NIC1 as NAT with `v.nat_device = "vmnet8"`. Leaving it unset makes the provider write a meaningless `ethernet0.vnet` value, which shows up in the UI as the VM sitting on VMnet0.
-- Set `v.allowlist_verified = true` so `ethernetN.pcislotnumber` survives rebuilds. Otherwise Workstation hands out new slots and guest interface names shift, which is exactly what breaks the `lab_iface` inventory variable.
-- Pin NIC order with `adapter: i + 1`; slot N here maps to `ethernetN` in the `.vmx`.
+- Pin NIC order with `adapter: i + 1`; slot N here maps to `ethernetN` in the `.vmx`. Slot 0 is left to Vagrant's own NAT adapter, which is what `vagrant ssh` uses during provisioning.
+- Give every NIC an explicit `mac:`, generated from the node index and the host octet. This is what makes the netplan `match` work; see the section above.
+- Set `auto_config: false` and write the addresses through netplan instead. Letting Vagrant configure the interface would fight the netplan file.
 - Enable `v.linked_clone = true` so VMs share the box base disk and save several GB.
 - Set `v.gui = false`; everything is done over SSH.
+- Set `v.vmx["cpuid.coresPerSocket"] = "1"` so the guest sees discrete sockets rather than cores, which keeps `lscpu` output predictable across rebuilds.
 - Disable the synced folder with `config.vm.synced_folder ".", "/vagrant", disabled: true`; HGFS from NTFS confuses file permissions and is not needed.
-- Pin `box_version` per machine so a later rebuild produces the same OS.
-- Declare `router01` first, so the gateway exists before the other zones boot.
+- Pin `box_version` once at the top level; one box for all 10 VMs means there is nothing to vary per machine.
+- Declare `fw01` first, so the gateway exists before the other zones boot.
+- Keep the provisioning in named shell blocks (`name: "netplan"`, `name: "bootstrap"`) so a failed run says which step broke.
 - Keep comments short and in English, per `code-style.md`.
 
 ## Minimum provisioning
@@ -66,24 +73,27 @@ Create these in Virtual Network Editor before the first `vagrant up`:
 - Copy the shared public key into the `vagrant` user `authorized_keys`, written so a rerun cannot duplicate the line.
 - Confirm passwordless sudo, and always check the sudoers file with `visudo -cf` before letting it take effect.
 - Set the hostname through `node.vm.hostname`, never by hand in a script.
-- The SSH key is generated on `mgmt01` first, then its public half is copied to `vagrant-provision/`. The `Vagrantfile` must abort with a clear message if that file is missing.
+- The SSH key pair must already exist in `vagrant-provision/` before the first `vagrant up`. It can no longer be generated on `mgmt01`, because `mgmt01` is now built by Vagrant and needs the key to get in. Generate it on the Windows host.
+- Commit only the public half. The private key must stay out of git; `.gitignore` patterns that rely on a file extension will not catch a key named `ansible-key`.
 
 ## Removing the NAT NIC
 
 - Order matters: configure the zone NIC and the static routes first, confirm `ansible all -m ping` works over the zone NIC, and only then remove NAT.
 - Removing NAT early leaves a node with no route in and no route out, recoverable only from the Workstation console.
-- `router01` must already be forwarding and masquerading before any other node loses its NAT NIC, or that node loses internet access and `apt` dies.
-- `router01` and `mgmt01` keep their NAT NIC permanently.
+- `fw01` must already be forwarding and masquerading before any other node loses its NAT NIC, or that node loses internet access and `apt` dies.
+- `fw01`, `mgmt01` and `mon01` keep their NAT NIC permanently.
 - After removal, `vagrant ssh` and `vagrant provision` no longer work for that node. `vagrant up`, `halt`, `destroy` and `snapshot` still do, because they act on the hypervisor rather than over the network.
-- From that point, SSH goes from `mgmt01` over the zone NIC through `router01`.
+- From that point, SSH goes from `mgmt01` over the zone NIC through `fw01`.
 - Record the removal in the snapshot name: snapshot `base` is taken **after** NAT removal, so a restore cannot bring the shortcut back.
 
 ## Snapshots
 
-- Names follow the milestones: `fresh` for a bare OS, then `base`, `db-ready`, `lb-ready`, `app-ready`, `stable`, `baseline`.
+- Names follow the milestones: `fresh` for a bare OS, then `base`, `db-ready`, `lb-ready`, `app-ready`, `stable`, `baseline`, `mon-ready`.
 - `vagrant snapshot save <name>` applies to every machine in the `Vagrantfile`.
 - **Always restore `db01` and `db02` together to the same snapshot.** Mismatched snapshots mean mismatched GTIDs and replication that is very hard to untangle.
 - Create `baseline` once the system is tuned and healthy; that is the return point for every chaos scenario.
+- **`mgmt01` is now inside the `Vagrantfile`, so a bulk restore rolls back the control node too.** That silently discards any uncommitted work, the Vault password file and the virtualenv. Commit and push before restoring, or restore the affected nodes by name instead of all of them.
+- The same applies to `mon01`: a bulk restore throws away the metric and log history, which is usually the evidence a postmortem needs. Restore it by name only when that is genuinely what you want.
 
 ## Common failures
 

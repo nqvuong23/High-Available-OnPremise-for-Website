@@ -1,8 +1,8 @@
-# Vagrant: chứa đĩa ảo và state, tuyệt đối không commit
+# Vagrant: virtual disks and state, never commit
 .vagrant/
 *.box
 
-# Secret: khoá riêng, vault password, chứng chỉ
+# Secrets: private keys, vault passwords, certificates
 *.key
 *.pem
 *_rsa
@@ -11,16 +11,21 @@ vault_pass*
 .vault_pass
 pki/
 
+# The provisioning key pair: ship the public half only.
+# Matched by name because the private key has no extension to match on.
+vagrant-provision/ansible-key
+!vagrant-provision/ansible-key.pub
+
 # Ansible
 *.retry
 ansible/collections/
 
-# Kết quả chạy, không phải mã nguồn
+# Run output, not source
 diagnostics/
 loadtest/results/
 *.log
 
-# Rác hệ điều hành và editor
+# OS and editor noise
 .DS_Store
 Thumbs.db
 *.swp

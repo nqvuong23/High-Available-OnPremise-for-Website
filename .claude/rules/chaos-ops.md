@@ -33,9 +33,9 @@ paths:
 - A database failure affecting only one web node, which the deliberately shallow health check cannot detect.
 - A wrong GRANT, from forgetting that MySQL sees the LB address as the source rather than the web node address.
 - Sudden primary death, used to measure RTO and RPO.
-- `router01` down, which breaks every cross-zone flow at once: HAProxy marks all backends DOWN, web nodes cannot reach the DB VIP, and Ansible cannot reach anything. The lesson is distinguishing a routing outage from a service outage.
+- `fw01` down, which breaks every cross-zone flow at once: HAProxy marks all backends DOWN, web nodes cannot reach the DB VIP, and Ansible cannot reach anything. The lesson is distinguishing a routing outage from a service outage.
 - A static route removed on one node, so it can reach its own zone but nothing else, which looks exactly like a firewall problem.
-- IP forwarding turned off on `router01`, a partial version of the same failure that is harder to spot because the router itself still answers pings.
+- IP forwarding turned off on `fw01`, a partial version of the same failure that is harder to spot because the router itself still answers pings.
 
 ## Additional candidates to fill the catalogue
 
@@ -44,7 +44,7 @@ paths:
 - Break the NFS export options or the UID/GID mapping so Nginx cannot read the uploads directory.
 - Fill the disk, and a separate scenario that fills the inode table.
 - Wrong firewall rule blocking 3306, 2049, 9200 or VRRP.
-- Masquerade rule removed on `router01`, so the lab keeps working but `apt` stops, which only surfaces on the next deployment.
+- Masquerade rule removed on `fw01`, so the lab keeps working but `apt` stops, which only surfaces on the next deployment.
 - A web node given a second NIC into the db zone, bypassing the router: everything works, and the isolation test silently stops meaning anything.
 - Replication lag spiking, or the IO thread failing.
 - Replica death letting semi-sync silently downgrade to async.

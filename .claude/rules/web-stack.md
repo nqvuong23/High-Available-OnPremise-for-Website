@@ -16,7 +16,7 @@ paths:
 - The server runs on nfs01 with `nfs-kernel-server`, NFSv4 only, v3 disabled.
 - Export `/srv/nfs/uploads` to exactly the two web node addresses, with `rw,sync,no_subtree_check`.
 - Clients install `nfs-common` and mount with `nfsvers=4.2,hard,noatime,_netdev`.
-- NFS traffic stays inside the app zone and never touches `router01`, which is why an NFS failure cannot be confused with a routing failure.
+- NFS traffic stays inside the app zone and never touches `fw01`, which is why an NFS failure cannot be confused with a routing failure.
 - Mounting `hard` is deliberate: data integrity first, at the cost of processes hanging in state D when NFS dies.
 - Mount only `wp-content/uploads`, never the whole WordPress tree.
 
