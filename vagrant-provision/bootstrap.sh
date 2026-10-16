@@ -24,15 +24,18 @@ rm -f $TEMP_KEY_PATH
 # ---------------------------------------------------------------------------
 # 2. Python for Ansible
 # ---------------------------------------------------------------------------
+if ! command -v apt-get >/dev/null 2>&1; then
+  log "[ERROR] no apt-get, Ansible cannot manage this node"
+  exit 1
+fi
+
+apt-get update -qq
+
 if command -v python3 >/dev/null 2>&1; then
-  log "python3 already present: $(python3 --version 2>&1), skipping"
-elif command -v apt-get >/dev/null 2>&1; then
-  apt-get update -qq
+  log "python3 already present: $(python3 --version 2>&1), skipping install"
+else
   apt-get install -y -qq python3
   log "python3 installed: $(python3 --version 2>&1)"
-else
-  log "[ERROR] no python3 and no apt-get, Ansible cannot manage this node"
-  exit 1
 fi
 
 # ---------------------------------------------------------------------------

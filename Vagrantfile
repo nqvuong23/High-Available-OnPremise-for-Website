@@ -14,6 +14,7 @@ IPV4_CIDR             = 24
 MAC_PREFIX            = "00:50:56"
 GATEWAY_OCTET         = 254
 LAB_ROUTE_METRIC      = 600
+SEARCH_DOMAIN         = "lab.internal"
 ROUTER_NAME           = "fw01"
 
 ZONES = [
@@ -32,13 +33,18 @@ NODES = [
   { name: "nfs01",    mem: 512,  cpus: 1, ips: ["192.168.20.21"] },
   { name: "db01",     mem: 1536, cpus: 2, ips: ["192.168.30.11"] },
   { name: "db02",     mem: 1536, cpus: 2, ips: ["192.168.30.12"] },
-  { name: "mgmt01",   mem: 1024, cpus: 2, ips: ["172.16.10.11"] },
+  { name: "mgmt01",   mem: 1024, cpus: 2, ips: ["172.16.10.11"], dns_extra: ["8.8.8.8", "1.1.1.1"] },
   { name: "mon01",    mem: 2048, cpus: 2, ips: ["172.16.10.21"] },
 ]
 
+def lab_zone_index(ip)
+  index = ZONES.index { |zone| zone[:subnet] == lab_zone_subnet(ip) }
+  raise "#{ip} belongs to no zone declared in ZONES" if index.nil?
+  index
+end
+
 def lab_mac(ip, idx)
-  o = ip.split(".").map(&:to_i)
-  format("#{MAC_PREFIX}:%02x:%02x:%02x", idx, o[2], o[3])
+  format("#{MAC_PREFIX}:%02x:%02x:%02x", idx, lab_zone_index(ip), ip.split(".").last.to_i)
 end
 
 def lab_gateway(ip)
@@ -66,7 +72,15 @@ def lab_routes(ip)
   routes
 end
 
-def lab_netplan(ips)
+def lab_nameservers(ip, dns_extra)
+  # fw01 resolves through its own bind9 on loopback, set in /etc/resolv.conf instead
+  return nil if lab_gateway(ip) == ip
+
+  # dns_extra is mgmt01 only: the control node must still resolve apt when bind9 is down
+  { "search" => [SEARCH_DOMAIN], "addresses" => [lab_gateway(ip)] + dns_extra }
+end
+
+def lab_netplan(ips, dns_extra)
   ethernets = {}
   ips.each_with_index do |ip, i|
     nic = {
@@ -78,6 +92,9 @@ def lab_netplan(ips)
 
     routes = lab_routes(ip)
     nic["routes"] = routes unless routes.empty?
+
+    nameservers = lab_nameservers(ip, dns_extra)
+    nic["nameservers"] = nameservers if nameservers
 
     ethernets["interface#{i}"] = nic
   end
@@ -111,7 +128,7 @@ Vagrant.configure("2") do |config|
         v.linked_clone = true
       end
 
-      netplan_b64 = [lab_netplan(node[:ips])].pack("m0")
+      netplan_b64 = [lab_netplan(node[:ips], node.fetch(:dns_extra, []))].pack("m0")
       macs        = node[:ips].each_with_index.map { |ip, i| lab_mac(ip, i) }.join(" ")
 
       m.vm.provision "shell", name: "netplan", inline: <<~SHELL

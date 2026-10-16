@@ -19,6 +19,8 @@ paths:
 - NFS traffic stays inside the app zone and never touches `fw01`, which is why an NFS failure cannot be confused with a routing failure.
 - Mounting `hard` is deliberate: data integrity first, at the cost of processes hanging in state D when NFS dies.
 - Mount only `wp-content/uploads`, never the whole WordPress tree.
+- Keep the mount point itself `root:root` and `0555` underneath the mount. A mount that fails at boot otherwise leaves a writable local directory in its place, WordPress keeps accepting uploads onto local disk, and the two web nodes diverge with nothing reporting it. Unwritable underneath turns that into a visible upload error instead.
+- Test the mount with `findmnt` and its exit code, never with `ls`. An unmounted mount point lists normally, which is what makes this failure mode so easy to miss.
 
 ## UID and GID
 
