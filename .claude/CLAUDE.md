@@ -48,14 +48,13 @@
 | `db01` | db `192.168.30.11` | 1536 MB | 2 | MySQL, initial primary |
 | `db02` | db `192.168.30.12` | 1536 MB | 2 | MySQL, initial replica |
 | `mgmt01` | client `172.16.10.11` | 1024 MB | 2 | Admin box and test client: Ansible, k6, scripts |
-| `mon01` | client `172.16.10.21` | 2048 MB | 2 | Prometheus, Loki, Grafana, Alertmanager |
 
-- All 10 VMs run Ubuntu 24.04 from the same box; there is no Debian exception any more. See ADR-15.
+- All 9 VMs run Ubuntu 24.04 from the same box; there is no Debian exception any more. See ADR-15.
 - VIP `192.168.10.100` is reserved for Keepalived and must never be assigned to a node.
 - `.1` in every zone is the Windows host adapter, owned by VMware.
-- 10 VMs and 10240 MB RAM in total, which is **exactly** the 10 GB ceiling. There is no headroom left, so any new VM or memory bump has to take RAM from an existing node.
+- 9 VMs and 8192 MB RAM in total, against a 10 GB ceiling, so there are 2048 MB spare. That spare came from dropping `mon01`; monitoring and logging are a separate project now. See ADR-26. Spend it deliberately, not by accident.
 - `fw01` gets 2 vCPU because every web-to-DB query crosses it twice, so it carries several times the packet rate of any other node. A single vCPU would make it the bottleneck in the k6 run and the performance numbers would measure the router instead of the stack.
-- The 512 MB nodes are tight once monitoring agents land on them: `node_exporter` plus the log agent cost roughly 80 MB, and `fw01` also runs bind9 and chrony. Measure before assuming they fit.
+- The 512 MB nodes are tight: `fw01` runs bind9 and chrony on top of the baseline. Measure before adding anything to them.
 
 ## 5. Deployment environment
 
@@ -63,9 +62,9 @@
 - **No WSL2.** The control machine is the `mgmt01` VM running Ubuntu 24.04.
 - Daily workflow: SSH from Windows into `mgmt01`, then run every Ansible command and script there.
 - `vagrant` runs only in Windows PowerShell at the repo root, never on `mgmt01`.
-- All 10 VMs, `mgmt01` and `mon01` included, are declared in the `Vagrantfile` and built from the same box. Nothing is installed by hand any more.
+- All 9 VMs, `mgmt01` included, are declared in the `Vagrantfile` and built from the same box. Nothing is installed by hand any more.
 - Because `mgmt01` is now destroyed by `vagrant destroy`, the SSH key pair it used to generate must exist in the repo **before** the first `vagrant up`. See ADR-21 for what that costs.
-- Every lab VM starts with a NAT NIC on `vmnet8` so Vagrant can reach it. That NIC is **removed once provisioning is done**, except on `fw01`, `mgmt01` and `mon01`, which keep it permanently.
+- Every lab VM starts with a NAT NIC on `vmnet8` so Vagrant can reach it. That NIC is **removed once provisioning is done**, except on `fw01` and `mgmt01`, which keep it permanently.
 - After NAT removal, lab nodes reach the internet only through `fw01` masquerade, and SSH only over their zone NIC; `vagrant ssh` and `vagrant provision` stop working, while `vagrant up`, `halt` and `snapshot` still do.
 - The repo lives on Windows; `mgmt01` gets the code with `git clone`, never through a hypervisor shared folder.
 - Every node, control node and managed nodes alike, runs the Ubuntu 24.04 system Python 3.12.3. That satisfies ansible-core 2.20, which needs 3.12 or newer on the control node.
@@ -88,7 +87,7 @@
 ## 7. Tech stack
 
 - Virtualization: VMware Workstation Pro 25H2, Vagrant 2.4.9, plugin `vagrant-vmware-desktop` 3.0.5, Vagrant VMware Utility 1.0.24.
-- Boxes: `bento/ubuntu-24.04` pinned to version `202510.26.0`, for all 10 VMs.
+- Boxes: `bento/ubuntu-24.04` pinned to version `202510.26.0`, for all 9 VMs.
 - Operating systems: Ubuntu 24.04 everywhere, with no exception.
 - Router: kernel IP forwarding plus one `nftables` masquerade rule, no routing daemon and no packet filter.
 - Internal services on `fw01`: chrony as the NTP server for all 4 zones, bind9 as the authoritative resolver for `lab.internal`.
@@ -99,15 +98,14 @@
 - Shared storage: NFS v4.2, mounted `hard` onto the WordPress uploads directory.
 - Automation: ansible-core 2.20.x in a virtualenv, secrets in Ansible Vault, checked with ansible-lint.
 - Testing and operations: k6 2.1.x, Bash and Python 3.12.3 with PyMySQL on the lab nodes, alerts through the Telegram Bot API.
-- Monitoring and logging on `mon01`: Prometheus, Alertmanager, Loki and Grafana, with `node_exporter`, `mysqld_exporter`, Blackbox Exporter and Grafana Alloy as the agents. See ADR-23 and M8.
 - Baseline security: AppArmor enforcing on every node. No host firewall and no zone policy; each service's own access control is the only layer, so `bind_address`, `listen-on`, `/etc/exports`, GRANT host patterns and nginx `allow` are load-bearing. See ADR-25.
 - Diagnostics: tcpdump, ss, lsof, mtr, traceroute, sysstat, conntrack-tools, auditd.
 
 ## 8. Repository layout
 
-- `Vagrantfile` and `vagrant-provision/` — declare all 10 VMs plus the minimum provisioning Ansible needs to get in.
+- `Vagrantfile` and `vagrant-provision/` — declare all 9 VMs plus the minimum provisioning Ansible needs to get in.
 - `ansible/` — `ansible.cfg`, `requirements.yml`, `inventory/`, `site.yml`, `verify.yml`, `roles/`.
-- `ansible/roles/` — common, router, nfs_server, nfs_client, mysql, mysqlchk, nginx_php, wordpress, haproxy, keepalived, mgmt; later monitoring_server, monitoring_agent. The PKI lives inside `haproxy`, because a role directory named `pki` matches `.gitignore`.
+- `ansible/roles/` — common, router, nfs_server, nfs_client, mysql, mysqlchk, nginx_php, wordpress, haproxy, keepalived, mgmt. The PKI lives inside `haproxy`, because a role directory named `pki` matches `.gitignore`.
 - `scripts/` — `lib/common.sh` shared by every scenario, `tools/`, and one `scenario-NN/` directory per failure scenario.
 - `scripts/scenario-NN/` — `NN-audit.sh` (continuous dashboard), `NN-simulate.sh`, `NN-rollback.sh`, `NN-troubleshoot.md`; every file of a scenario stays in its own directory.
 - `loadtest/k6/` — load test scenarios and the before/after tuning performance report.
@@ -153,8 +151,7 @@ ansible-lint
 ## 11. Working method
 
 - Do it by hand once to understand the mechanism, then turn it into an Ansible role.
-- Build bottom-up in dependency order: Network and Router -> OS -> Database -> LB/VIP -> Storage -> Web/App -> Monitoring.
-- Monitoring comes last on purpose: it needs a real system with real failure modes to observe, and the `chaos/` scenarios are what prove an alert actually fires.
+- Build bottom-up in dependency order: Network and Router -> OS -> Database -> LB/VIP -> Storage -> Web/App.
 - Every milestone has its own acceptance test; pass it, snapshot, then move on.
 - Every RTO, RPO and error-rate number must be measured and recorded, never estimated.
 - Write documentation as the work happens, not at the end.
@@ -163,7 +160,7 @@ ansible-lint
 
 ## 12. Where the detail lives
 
-- `milestones.md` — milestones M0 to M8 and their acceptance criteria; always loaded, this is the roadmap.
+- `milestones.md` — milestones M0 to M7 and their acceptance criteria; always loaded, this is the roadmap.
 - `code-style.md` — language and comment rules for code, commands and log strings; always loaded.
 - `architecture.md` — full diagram, data flows, zone routing, state before and after DB failover.
 - `decisions.md` — design decisions with their reasons and trade-offs.

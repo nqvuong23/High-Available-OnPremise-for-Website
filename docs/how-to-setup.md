@@ -196,7 +196,6 @@ db02    IN  A       192.168.30.12
 
 ; client zone
 mgmt01  IN  A       172.16.10.11
-mon01   IN  A       172.16.10.21
 ```
 
 - Write to file `/etc/bind/zones/db.192.168.10` (**Reverse zone files**)
@@ -249,7 +248,6 @@ $TTL 3600
 @   IN  NS  ns1.lab.internal.
 
 11  IN  PTR mgmt01.lab.internal.
-21  IN  PTR mon01.lab.internal.
 254 IN  PTR fw01-client.lab.internal.
 ```
 
@@ -2019,27 +2017,4 @@ resolvectl status | head -20
 source ~/ansible-venv/bin/activate
 cd ~/linux_project/ansible
 ansible all -m ping
-```
-
----
-
-### mon01
-
-2. Config NTP client
-
-- Edit file `/etc/chrony/chrony.conf`:
-
-```
-# Comment the lines of pool server
-# replace that lines by NTP server (fw01)
-server 172.16.10.254 iburst
-```
-
-- Restart and check chrony: 
-
-```shell
-sudo systemctl restart chrony
-sudo chronyc tracking
-sudo chronyc sources -v
-timedatectl status
 ```

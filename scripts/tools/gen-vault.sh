@@ -12,7 +12,7 @@ command -v ansible-vault >/dev/null || { echo "[ERROR] ansible-vault not found, 
 command -v openssl >/dev/null || { echo "[ERROR] openssl not found" >&2; exit 1; }
 
 if [[ -e $vault_file && ${1:-} != --force ]]; then
-    echo "[ERROR] $vault_file exists; rerun with --force to replace every secret" >&2
+    echo "[ERROR] $vault_file exists; rerun command with parameter [--force] to replace every secret" >&2
     exit 1
 fi
 
@@ -48,6 +48,6 @@ vault_wordpress_salts:
   nonce_salt: $(rand 64)
 EOF
 
-ansible-vault encrypt --vault-password-file "$pass_file" --output "$vault_file" "$tmp" >/dev/null
+ansible-vault encrypt --vault-password-file "$pass_file" --encrypt-vault-id default --output "$vault_file" "$tmp" >/dev/null
 echo "[OK] wrote encrypted $vault_file"
 echo "[INFO] read a value with: ansible-vault view $vault_file"

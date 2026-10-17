@@ -17,13 +17,13 @@
 ## M1 — Lab build, routing and OS baseline
 
 - Deliverable: `Vagrantfile`, role `common`, role `router` with forwarding and masquerade.
-- Done when: all 10 VMs are up on the right VMnets with the right static IPs, and `fw01` forwards between all 4 zones.
+- Done when: all 9 VMs are up on the right VMnets with the right static IPs, and `fw01` forwards between all 4 zones.
 - Done when: every NIC is matched by MAC address, so a rebuild cannot shift which interface holds which zone address. See ADR-20.
 - Done when: from `mgmt01`, `ansible all -m ping` succeeds over the zone NICs, routed through `fw01`.
 - Done when: `traceroute` from `web01` to `db01` shows exactly one hop at `192.168.20.254`, proving traffic is routed and not bridged.
 - Done when: lab nodes still reach the internet after the NAT NIC is removed, through `fw01` masquerade.
 - Done when: AppArmor is enforcing and chrony is in sync.
-- Done when: no firewall is loaded anywhere. `nft list ruleset` is empty on the 9 non-router nodes, shows only `ip router_nat` on `fw01`, and `ufw` is not installed on any node. See ADR-25.
+- Done when: no firewall is loaded anywhere. `nft list ruleset` is empty on the 8 non-router nodes, shows only `ip router_nat` on `fw01`, and `ufw` is not installed on any node. See ADR-25.
 - Done when: the whole lab can be destroyed and rebuilt by command alone, no manual step, timed.
 - Snapshot when done: `base`.
 
@@ -70,19 +70,6 @@
 - Done when: the health check detects at least 10 failure scenarios within 2 minutes.
 - Done when: there is a load test report from before and after tuning, with an explanation.
 
-## M8 — Monitoring and logging
-
-- Start only after M7 passes and is snapshotted. Monitoring needs a real system with real failure modes to observe, and `chaos/` is what proves an alert fires.
-- Deliverable: roles `monitoring_server` and `monitoring_agent`, dashboards, alert rules, `mon01` fully built by Ansible.
-- Stack: Prometheus, Alertmanager, Loki, Grafana on `mon01`; `node_exporter`, `mysqld_exporter`, Blackbox Exporter and Grafana Alloy on the monitored nodes. See ADR-23.
-- Done when: every node appears in Prometheus as `up`, scraped from `mon01` across the routed path.
-- Done when: an alert fires for at least 10 of the `chaos/` scenarios, with the delay from inject to alert recorded per scenario.
-- Done when: `mysql_global_status_rpl_semi_sync_source_status` is alerted on. ADR-08 says semi-sync falls back to async silently on timeout, so without this alert G5 cannot be claimed.
-- Done when: a disk-filling alert fires before the filesystem is full, which is the failure that caused the original incident.
-- Done when: logs from all 10 nodes land in Loki and a chaos postmortem is written by correlating log lines **across** nodes by timestamp. This only works because `fw01` serves NTP; without a common clock the correlation is meaningless.
-- Done when: Loki labels are limited to host, job and unit. No request ID or client IP in a label, because label cardinality is what kills Loki.
-- Known limitation to record: `mon01` sits in the client zone, so `fw01` is in the monitoring path. If `fw01` dies, monitoring goes blind and cannot alert on the thing that died.
-
 ## Extra goals
 
 - G5 — semi-sync: `Rpl_semi_sync_source_status = ON`, with an async versus semi-sync RPO comparison table.
@@ -93,16 +80,14 @@
 - G10 — chaos: 19 scenarios planned, at least 10 required, at least 12 completed.
 - G11 — incident automation: `diagnose.yml`, `triage.py`, `auto_remediate.sh`, `db_failover.py`, `order_writer.py`, `rpo_check.py`.
 - G12 — documentation: README, diagrams, ADRs, runbooks, known limitations.
-- G13 — observability: a table of the `chaos/` scenarios against the alert that fires and the measured delay from inject to alert, plus one postmortem written by correlating Loki logs across nodes.
 
 ## Out of scope, must be stated in the README
 
 - No firewall on any node and no zone policy on the router; see ADR-25. The 4 zones stay routed and separate, but nothing enforces which pairs may talk, so the app zone can reach the db zone directly and only the MySQL GRANT host pattern stops it. Every "denied on purpose" flow is design intent, not enforcement, and each service's own access control is single-layer with nothing behind it. The future fix is to put the `nftables` zone policy back; this is the largest honesty item in the project and must be stated first, not buried.
 - A single NFS server is a known SPOF; the future fix is GlusterFS, DRBD with Pacemaker, or object storage.
-- `fw01` is a single router and therefore a SPOF for every cross-zone flow, including web to DB; the future fix is a second router with VRRP, or collapsing the zones.
+- `fw01` is a single router and therefore a SPOF for every cross-zone flow, including web to DB; the future fix is a second router with VRRP, or collapsing the zones. Dropping `mon01` freed 2048 MB, so that second router is now affordable rather than ruled out by the RAM budget.
 - No automatic DB failover; the future fix is Orchestrator or ProxySQL with fencing.
 - Fencing is only simulated, by powering the VM off and by booting read-only; there is no real STONITH.
 - The whole lab sits on one physical machine, so host-level failure is not covered.
 - Backup and restore stops at rebuilding a replica; there is no real backup solution.
-- Monitoring covers metrics, logs and alerting, but not tracing, and Prometheus keeps only local short-term storage; there is no Thanos or Mimir, so history is bounded by the retention set on `mon01`.
-- No SNMP or IPMI monitoring, because there is no physical network hardware or BMC in the lab. This is the main thing Zabbix would have added. See ADR-23.
+- No metrics, no central logging and no dashboards; `mon01` was deleted and that work moved to a separate project. See ADR-26. Fault detection here is the per-scenario audit scripts plus `healthcheck.py`, the node-local check M7 still owes, which can send a Telegram message but is not an observability stack: pull-based, started by hand, no history, and no proof of how fast an alert would have fired. Three consequences must be named rather than glossed over — ADR-08's silent semi-sync fallback has no alert behind it, the disk-filling failure that caused the original incident is caught only by a local check and a scenario, and there is no cross-node log correlation.

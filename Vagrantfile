@@ -38,7 +38,6 @@ NODES = [
   { name: "db01",     mem: 1536, cpus: 2, ips: ["192.168.30.11"] },
   { name: "db02",     mem: 1536, cpus: 2, ips: ["192.168.30.12"] },
   { name: "mgmt01",   mem: 1024, cpus: 2, ips: ["172.16.10.11"], dns_extra: ["8.8.8.8", "1.1.1.1"] },
-  { name: "mon01",    mem: 2048, cpus: 2, ips: ["172.16.10.21"] },
 ]
 
 def lab_zone_index(ip)

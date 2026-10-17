@@ -5,11 +5,12 @@
 > Goal: a complete working system — client reaches the site through the VIP, orders
 > land in MySQL, uploads are shared between both web nodes — **before** any chaos
 > scenario runs. Every command is run as root or under `sudo`.
-> `mon01` is out of scope here; monitoring is M8 and starts after M7.
+> There is no monitoring layer in this project: `mon01` was removed and that work moved to a
+> separate project, so detection is `healthcheck.py` and the scenario audits. See ADR-26.
 
 ## Starting point assumed
 
-- 10 VMs up, static IPs, routes and `ip_forward` on `fw01` done, every node pings every node.
+- 9 VMs up, static IPs, routes and `ip_forward` on `fw01` done, every node pings every node.
 - Already installed by hand: chrony + bind9 on `fw01`, keepalived + haproxy on the LBs,
   nginx on the web nodes, a MySQL server package on the DB nodes.
 
@@ -211,7 +212,7 @@ ufw disable
 apt-get purge -y ufw
 ```
 
-Run this on all 10 nodes, `fw01` included. ADR-25 removed the firewall layer entirely, and
+Run this on all 9 nodes, `fw01` included. ADR-25 removed the firewall layer entirely, and
 the package is purged rather than left disabled so "is a rule blocking this?" is never a
 hypothesis during a drill. Purging also removes `/etc/default/ufw`, which is what used to
 make `ufw` filter the FORWARD chain on a routing node and silently contradict the routing.
@@ -257,7 +258,7 @@ nft list ruleset
 cross-zone flow depends on.
 
 The output must show this table and nothing else. No `filter` chain, no `drop`, on `fw01`
-or anywhere. On the other nine nodes `nftables.service` stays stopped, so their ruleset is
+or anywhere. On the other eight nodes `nftables.service` stays stopped, so their ruleset is
 empty; the `nft` binary stays installed because three chaos scenarios inject a rule with it
 and delete it again on rollback.
 
@@ -266,31 +267,31 @@ What this costs is worth stating plainly: the app zone can now reach
 than an enforced one, and every service's own access control is the only layer left. That
 is the trade in ADR-25.
 
-### 4. Add the missing DNS records
+### 4. Confirm the zone files cover every node
 
-`deploy-v1.md` wrote the zone files before `mon01` existed. Add it, and bump the SOA
-serial — a changed zone with an unchanged serial is silently ignored.
+`deploy-v1.md` wrote the zone files. Nothing new needs adding here, but check the set is
+complete before depending on it, because a missing record only shows up later as a
+confusing connection failure:
 
-In `/etc/bind/zones/db.lab.internal`:
-
-```
-mon01   IN  A       172.16.10.21
-```
-
-In `/etc/bind/zones/db.172.16.10`:
-
-```
-21  IN  PTR mon01.lab.internal.
+```bash
+for n in fw01 lb01 lb02 web01 web02 nfs01 db01 db02 mgmt01 shop vip; do
+    printf '%-8s %s\n' "$n" "$(dig +short "$n.lab.internal")"
+done
 ```
 
-Bump the serial in both files, then:
+Nine nodes plus `shop` and `vip`, with no empty answer. If a record does have to be added,
+**bump the SOA serial in the same edit** — a changed zone with an unchanged serial is
+silently ignored, which looks exactly like a reload that did not happen:
 
 ```bash
 named-checkzone lab.internal /etc/bind/zones/db.lab.internal
 named-checkzone 10.16.172.in-addr.arpa /etc/bind/zones/db.172.16.10
 systemctl reload named
-dig +short mon01.lab.internal
 ```
+
+`172.16.10.21` is deliberately unused: it held `mon01` until monitoring moved to its own
+project. Keep it free rather than reassigning it, so `.21` still means "supporting service"
+in every zone.
 
 ### 5. Verify
 

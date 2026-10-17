@@ -281,7 +281,7 @@ bash scenario-06/06-rollback.sh
 
 ### What it proves
 
-- Certificate monitoring must validate name and date, not only the port.
+- A certificate check must validate name and expiry, not only that the port answers.
 
 ---
 

@@ -1,4 +1,4 @@
-# Scenario 06 — troubleshooting: browsers refuse the site, monitoring says it is up
+# Scenario 06 — troubleshooting: browsers refuse the site, every health check says it is up
 
 > Do not read **Root cause** until your own diagnosis is finished. Run every command by hand.
 
@@ -81,6 +81,7 @@ curl -sI https://shop.lab.internal | head -1      # no -k
 ## Lesson
 
 - Separate "TLS works" from "this certificate is valid for this name" with `curl -k`.
-- Monitoring must validate the certificate against the name and the date, or it reports a
-  certificate outage as healthy.
+- A port check is not a certificate check. Whatever watches TLS has to validate the name and
+  the expiry date, or it reports a certificate outage as healthy — which is exactly what
+  HAProxy's own backend checks do here.
 - Compare both LBs: a certificate fault on the backup is invisible until the VIP moves.

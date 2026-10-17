@@ -1,6 +1,6 @@
 ---
 # bump on every zone change: an unchanged serial makes caches ignore the edit
-router_dns_serial: "2026101701"
+router_dns_serial: "2026101702"
 router_dns_forwarders: "{{ lab_upstream_dns }}"
 # zone whose gateway address answers as ns1
 router_ns_zone: dmz

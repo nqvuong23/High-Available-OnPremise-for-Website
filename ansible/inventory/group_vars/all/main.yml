@@ -41,8 +41,8 @@ web_ips: "{{ groups['web'] | map('extract', hostvars, 'lab_ip') | list }}"
 db_ips: "{{ groups['db'] | map('extract', hostvars, 'lab_ip') | list }}"
 nfs_ip: "{{ hostvars[groups['nfs'][0]].lab_ip }}"
 mgmt_ip: "{{ hostvars[groups['mgmt'][0]].lab_ip }}"
-mon_ip: "{{ hostvars[groups['mon'][0]].lab_ip }}"
-admin_ips: "{{ [mgmt_ip, mon_ip] }}"
+# one entry today; kept as a list because every consumer iterates it
+admin_ips: "{{ [mgmt_ip] }}"
 host_adapter_ips: "{{ lab_zones | dict2items | map(attribute='value.host_adapter') | list }}"
 zone_subnets: "{{ lab_zones | dict2items | map(attribute='value.subnet') | list }}"
 

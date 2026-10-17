@@ -7,7 +7,7 @@ paths:
 # Building the lab with Vagrant and VMware
 
 > `vagrant` runs **only in Windows PowerShell** at the repo root. `mgmt01` never drives the hypervisor.
-> All 10 VMs are declared in the `Vagrantfile`, `mgmt01` and `mon01` included. Nothing is installed by hand.
+> All 9 VMs are declared in the `Vagrantfile`, `mgmt01` included. Nothing is installed by hand.
 
 ## Software on the Windows host
 
@@ -18,7 +18,7 @@ paths:
 
 ## Boxes
 
-- `bento/ubuntu-24.04` for all 10 VMs, pinned to `202510.26.0`. There is no second box and no ISO install.
+- `bento/ubuntu-24.04` for all 9 VMs, pinned to `202510.26.0`. There is no second box and no ISO install.
 - One distro family keeps the Ansible roles single-path; see ADR-13 and ADR-15.
 - Always add a box with `--provider vmware_desktop --architecture amd64`; without those flags it reports that the box has no such provider.
 - Download boxes before `vagrant up` so a network failure cannot be mistaken for a build failure.
@@ -63,7 +63,7 @@ The provider chooses the VMnet, and a deterministic MAC address decides which ad
 - Set `v.gui = false`; everything is done over SSH.
 - Set `v.vmx["cpuid.coresPerSocket"] = "1"` so the guest sees discrete sockets rather than cores, which keeps `lscpu` output predictable across rebuilds.
 - Disable the synced folder with `config.vm.synced_folder ".", "/vagrant", disabled: true`; HGFS from NTFS confuses file permissions and is not needed.
-- Pin `box_version` once at the top level; one box for all 10 VMs means there is nothing to vary per machine.
+- Pin `box_version` once at the top level; one box for all 9 VMs means there is nothing to vary per machine.
 - Declare `fw01` first, so the gateway exists before the other zones boot.
 - Keep the provisioning in named shell blocks (`name: "netplan"`, `name: "bootstrap"`) so a failed run says which step broke.
 - Keep comments short and in English, per `code-style.md`.
@@ -83,19 +83,18 @@ The provider chooses the VMnet, and a deterministic MAC address decides which ad
 - Order matters: configure the zone NIC and the static routes first, confirm `ansible all -m ping` works over the zone NIC, and only then remove NAT.
 - Removing NAT early leaves a node with no route in and no route out, recoverable only from the Workstation console.
 - `fw01` must already be forwarding and masquerading before any other node loses its NAT NIC, or that node loses internet access and `apt` dies.
-- `fw01`, `mgmt01` and `mon01` keep their NAT NIC permanently.
+- `fw01` and `mgmt01` keep their NAT NIC permanently.
 - After removal, `vagrant ssh` and `vagrant provision` no longer work for that node. `vagrant up`, `halt`, `destroy` and `snapshot` still do, because they act on the hypervisor rather than over the network.
 - From that point, SSH goes from `mgmt01` over the zone NIC through `fw01`.
 - Record the removal in the snapshot name: snapshot `base` is taken **after** NAT removal, so a restore cannot bring the shortcut back.
 
 ## Snapshots
 
-- Names follow the milestones: `fresh` for a bare OS, then `base`, `db-ready`, `lb-ready`, `app-ready`, `stable`, `baseline`, `mon-ready`.
+- Names follow the milestones: `fresh` for a bare OS, then `base`, `db-ready`, `lb-ready`, `app-ready`, `stable`, `baseline`.
 - `vagrant snapshot save <name>` applies to every machine in the `Vagrantfile`.
 - **Always restore `db01` and `db02` together to the same snapshot.** Mismatched snapshots mean mismatched GTIDs and replication that is very hard to untangle.
 - Create `baseline` once the system is tuned and healthy; that is the return point for every chaos scenario.
 - **`mgmt01` is now inside the `Vagrantfile`, so a bulk restore rolls back the control node too.** That silently discards any uncommitted work, the Vault password file and the virtualenv. Commit and push before restoring, or restore the affected nodes by name instead of all of them.
-- The same applies to `mon01`: a bulk restore throws away the metric and log history, which is usually the evidence a postmortem needs. Restore it by name only when that is genuinely what you want.
 
 ## Common failures
 

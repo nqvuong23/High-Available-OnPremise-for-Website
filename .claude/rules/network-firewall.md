@@ -9,7 +9,7 @@ paths:
 
 # Network, routing and the port matrix
 
-> **The lab runs no firewall.** `ufw` is purged on all 10 nodes, `nftables.service` runs only on `fw01` and only to masquerade. See ADR-25.
+> **The lab runs no firewall.** `ufw` is purged on all 9 nodes, `nftables.service` runs only on `fw01` and only to masquerade. See ADR-25.
 > Principles: force cross-zone traffic through `fw01`, keep every service bound as narrowly as it can be, and **verify with a real port scan** instead of reading configuration — knowing the scan now measures what is listening, not what is permitted.
 
 ## Address plan
@@ -19,12 +19,12 @@ paths:
 | dmz | `vmnet1` | `192.168.10.0/24` | `.254` | lb01 `.11`, lb02 `.12` | VIP `.100`, host `.1` |
 | app | `vmnet2` | `192.168.20.0/24` | `.254` | web01 `.11`, web02 `.12`, nfs01 `.21` | `.100`, host `.1` |
 | db | `vmnet3` | `192.168.30.0/24` | `.254` | db01 `.11`, db02 `.12` | `.100`, host `.1` |
-| client | `vmnet4` | `172.16.10.0/24` | `.254` | mgmt01 `.11`, mon01 `.21` | `.100`, host `.1` |
-| NAT | `vmnet8` | `10.10.10.0/24` | `.2` | temporary NIC1 on all lab VMs, permanent on fw01, mgmt01 and mon01 | — |
+| client | `vmnet4` | `172.16.10.0/24` | `.254` | mgmt01 `.11` | `.100`, `.21`, host `.1` |
+| NAT | `vmnet8` | `10.10.10.0/24` | `.2` | temporary NIC1 on all lab VMs, permanent on fw01 and mgmt01 | — |
 
 - `.254` in every zone is `fw01`. `.1` is the Windows host adapter. `.100` is reserved for a VIP, assigned only in the dmz zone today.
 - Keep `.100` free in all four zones so a second VIP can be added later without renumbering.
-- `.11` and `.12` are request-serving pairs, `.21` is a supporting service: `nfs01` in the app zone, `mon01` in the client zone. Keep that convention when adding a node.
+- `.11` and `.12` are request-serving pairs, `.21` is a supporting service: `nfs01` in the app zone. `172.16.10.21` is free since `mon01` was removed (ADR-26); keep it reserved so the convention still holds.
 - Every NIC carries a MAC generated from the node index and the host octet, and netplan matches on that MAC rather than on an interface name. A rebuild therefore cannot move a zone address onto the wrong NIC. See ADR-20.
 
 ## Routing
@@ -40,7 +40,7 @@ paths:
 
 ## No firewall, and what replaces it
 
-- `ufw` is **purged** on all 10 nodes by the `common` role, not merely disabled. See ADR-25.
+- `ufw` is **purged** on all 9 nodes by the `common` role, not merely disabled. See ADR-25.
 - `nftables.service` is stopped and disabled everywhere except `fw01`, where it loads one table, `ip router_nat`, holding only the masquerade rule. Policy accept, no filter chain, nothing is ever dropped.
 - The `nft` binary stays installed on every node, because chaos scenarios 05, 14 and 18 load their own `inet lab_chaos` table and delete it on rollback. That is the only way a drop rule may ever exist.
 - No Ansible role writes a filter rule. If a role needs one to make a flow work, the design is wrong, not the firewall.
@@ -79,13 +79,6 @@ Cross-zone, routed by `fw01`:
 - lb01, lb02 -> db01, db02: TCP 3306 to proxy MySQL, TCP 9200 to call `mysqlchk`.
 - web01, web02 -> VIP `192.168.10.100`: TCP 3306, WordPress reads and writes through HAProxy.
 - every node -> its own zone `.254`: UDP 123 for chrony, UDP and TCP 53 for bind9. Addressed to the router itself, so it terminates there rather than being forwarded.
-- mon01 -> every node: TCP 9100 for `node_exporter`.
-- mon01 -> db01, db02: TCP 9104 for `mysqld_exporter`.
-- mon01 -> web01, web02: TCP 9113 for the Nginx exporter, TCP 9253 for the PHP-FPM exporter.
-- mon01 -> lb01, lb02: TCP 8405 for the HAProxy Prometheus endpoint, which HAProxy 3.3 serves natively with no separate exporter.
-- mon01 -> db01, db02: TCP 9200 to call `mysqlchk` as a Blackbox target, and -> web01, web02 TCP 80 for `/healthz.php`.
-- every node -> mon01: TCP 3100, Grafana Alloy shipping logs into Loki.
-- admin -> mon01: TCP 3000 for Grafana, TCP 9090 for Prometheus, TCP 9093 for Alertmanager.
 
 TCP 53 matters alongside UDP 53. A response past the UDP payload limit sets the truncated bit and the client retries over TCP, so a resolver listening only on UDP produces intermittent failures on large answers. Check both `ss -ulnp` and `ss -tlnp`.
 
@@ -114,14 +107,13 @@ Flows the design rules out but **nothing blocks**. These used to be firewall tes
 
 ## How to verify
 
-- Prove no firewall is loaded: `nft list ruleset` must be **empty** on all 9 non-router nodes and show only `ip router_nat` on `fw01`, and `command -v ufw` must find nothing anywhere.
+- Prove no firewall is loaded: `nft list ruleset` must be **empty** on all 8 non-router nodes and show only `ip router_nat` on `fw01`, and `command -v ufw` must find nothing anywhere.
 - Scan from mgmt01: `sudo nmap -sS -p- 192.168.10.11,12 192.168.20.11,12,21 192.168.30.11,12`. Every listening port shows open, so compare the result against what each service **binds**, not against the matrix. A port open wider than its `bind_address` should allow is the finding.
 - Prove the routing is real: `traceroute -n 192.168.30.11` from web01 must show `192.168.20.254` as the first hop.
 - Try the flow the design rules out, web01 to `192.168.30.11:3306`, and record what actually happens: the TCP connection succeeds and MySQL refuses the user. Do not write it up as blocked.
 - Confirm the stats page and `/fpm-status` reject unknown sources. This is now the only layer in front of them, so test it from a node that is not on the allow list rather than assuming it.
 - Confirm egress still works after NAT NIC removal: `curl -I https://deb.debian.org` from web01 must succeed through the router. If it fails, check the masquerade table first; nothing else can cause it.
 - Confirm bind9 refuses the NAT address while answering on the zone addresses, from `mgmt01`, which keeps a NAT NIC and so has a genuine NAT-segment source address. Expect chrony to answer that same test from NAT and record it as the known limitation it is.
-- Confirm `mon01` can scrape every exporter, and note that nothing stops a web node scraping them too.
 
 ## Domain name
 

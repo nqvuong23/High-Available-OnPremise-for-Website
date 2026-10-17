@@ -25,10 +25,9 @@ paths:
 - Every role has `defaults/`, `tasks/`, `templates/` and `handlers/` as needed.
 - One distro family means no `tasks/RedHat.yml` and `tasks/Debian.yml` split; keep a single task path and do not add per-OS branching for a case that cannot occur.
 - `mgmt01` is the control node and configures itself, so keep whatever targets it in a separate play rather than in `site.yml`'s managed-node run.
-- `site.yml` calls roles in dependency order: common -> router -> nfs -> mysql -> mysqlchk -> haproxy -> keepalived -> web -> mgmt -> monitoring. There is no firewall play; see ADR-25.
+- `site.yml` calls roles in dependency order: common -> router -> nfs -> mysql -> mysqlchk -> haproxy -> keepalived -> web -> mgmt. There is no firewall play (ADR-25) and no monitoring play (ADR-26).
 - `fw01` must be configured before any role that depends on cross-zone reachability, and now also before anything that needs DNS or NTP, because it serves both.
-- Monitoring runs last: `monitoring_agent` on every managed node, `monitoring_server` on `mon01`.
-- Group the inventory two ways: by role (`router`, `lb`, `web`, `db`, `nfs`, `mgmt`, `mon`) and by zone (`dmz`, `app`, `dbzone`, `client`).
+- Group the inventory two ways: by role (`router`, `lb`, `web`, `db`, `nfs`, `mgmt`) and by zone (`dmz`, `app`, `dbzone`, `client`).
 - Variables used in more than one place, such as the VIP, the domain, the zone subnets, the gateway octet and UID/GID, are defined **once** in `group_vars`.
 
 ## Idempotency

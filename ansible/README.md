@@ -1,4 +1,3 @@
-| router | `fw01` | `router`: forwarding, masquerade, chrony server, bind9, static resolver |
 # Ansible: build the whole lab with one playbook
 
 Runs on `mgmt01`. Rebuilds everything `docs/how-to-setup.md` does by hand, starting from

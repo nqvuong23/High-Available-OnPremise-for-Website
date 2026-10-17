@@ -47,7 +47,7 @@ own step.
 
 ## 2. Prerequisites
 
-- M1 is complete: all 10 VMs are up, `fw01` forwards between the 4 zones.
+- M1 is complete: all 9 VMs are up, `fw01` forwards between the 4 zones.
 - `ansible all -m ping` succeeds from `mgmt01`.
 - `fw01` reaches the internet, so chrony can sync upstream and bind9 can forward.
 - Snapshot every VM before starting: `vagrant snapshot save pre-deploy-v1`.
@@ -71,7 +71,7 @@ These belong in `.claude/rules/decisions.md` as new ADRs. Each states a cost.
   acceptable only because a `fw01` outage already breaks every cross-zone flow,
   so it adds no new failure mode.
 - **chrony, not `systemd-timesyncd`.** Reason: `timesyncd` is an SNTP client only and
-  cannot serve time. Cost: one more service to configure on 10 nodes.
+  cannot serve time. Cost: one more service to configure on 9 nodes.
 - **bind9, not `dnsmasq`.** Reason: real zone files, reverse zones, SOA serial
   discipline and `named-checkzone` validation are the skills worth learning, and bind9
   is what production uses for authoritative internal DNS. Cost: roughly 30 MB more RSS
@@ -567,7 +567,7 @@ chmod 640 /etc/bind/zones/*
 ## 17. Validate before reloading
 
 Never reload `named` without checking first. A syntax error in one zone file takes
-the whole resolver down, and on this lab that means DNS for all 10 nodes.
+the whole resolver down, and on this lab that means DNS for all 9 nodes.
 
 ```bash
 named-checkconf
@@ -1100,7 +1100,7 @@ nc -zv -w 3 192.168.20.21 2049      # must fail
 
 Time:
 
-- [ ] `systemd-timesyncd` is masked on all 10 nodes.
+- [ ] `systemd-timesyncd` is masked on all 9 nodes.
 - [ ] `chronyc clients` on `fw01` lists all 8 other nodes.
 - [ ] Every client shows exactly one source, its own zone `.254`, marked `^*`.
 - [ ] `timedatectl status` shows `System clock synchronized: yes` everywhere.
@@ -1113,7 +1113,7 @@ Time:
 DNS:
 
 - [ ] `named-checkconf` and all five `named-checkzone` runs report `OK`.
-- [ ] Forward lookups resolve for all 10 nodes plus `shop` and `vip`.
+- [ ] Forward lookups resolve for all 9 nodes plus `shop` and `vip`.
 - [ ] Reverse lookups resolve in all four subnets.
 - [ ] `shop.lab.internal` resolves to `192.168.10.100`, never to a node address.
 - [ ] Public recursion works from every zone.

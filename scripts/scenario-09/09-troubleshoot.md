@@ -87,4 +87,5 @@ period: new opens can wait up to the NFSv4 lease time, 90 seconds by default. Me
 - `hard` trades availability for integrity: no corrupted upload, but a hung tier. That is the
   accepted cost in ADR-11, and `nfs01` is the documented SPOF of ADR-10.
 - The shallow check keeps one NFS outage from dropping both nodes instantly; it cannot stop
-  exhaustion from doing it slowly. NFS needs its own monitoring.
+  exhaustion from doing it slowly. NFS therefore needs a check of its own, which here is
+  `healthcheck.py` on each node rather than anything central.
