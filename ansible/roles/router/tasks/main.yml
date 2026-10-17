@@ -1,0 +1,167 @@
+---
+- name: Enable IPv4 forwarding persistently
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_file: /etc/sysctl.d/99-router.conf
+    state: present
+    reload: true
+
+- name: Check the default route leaves through the NAT segment
+  ansible.builtin.assert:
+    that:
+      - router_nat_iface | length > 0
+      - ansible_facts.default_ipv4.network == lab_nat_subnet.split('/')[0]
+    fail_msg: "[ERROR] default route of {{ inventory_hostname }} is not on {{ lab_nat_subnet }}"
+    quiet: true
+
+# loading the new file does not remove a table the old file created, so an upgraded node
+# would keep the dropped zone policy in the kernel until it rebooted
+- name: List the loaded nftables tables
+  ansible.builtin.command: nft list tables
+  register: router_nft_tables
+  changed_when: false
+
+- name: Drop the zone policy table left over from before ADR-25
+  ansible.builtin.command: nft delete table inet router
+  when: "'table inet router' in router_nft_tables.stdout"
+  changed_when: true
+
+# masquerade is the only netfilter rule in the lab; without it a node loses the internet
+# as soon as its own NAT NIC is removed. No filter chain anywhere, see ADR-25.
+- name: Write the masquerade rule
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0755"
+    validate: nft -c -f %s
+  notify: Reload nftables
+
+- name: Enable and start nftables for the masquerade rule
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Serve NTP to the four zones
+  ansible.builtin.template:
+    src: chrony-server.conf.j2
+    dest: /etc/chrony/conf.d/server.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+
+- name: Install bind9
+  ansible.builtin.apt:
+    name:
+      - bind9
+      - bind9-utils
+      - bind9-dnsutils
+    state: present
+
+- name: Write the bind9 options
+  ansible.builtin.template:
+    src: named.conf.options.j2
+    dest: /etc/bind/named.conf.options
+    owner: root
+    group: bind
+    mode: "0644"
+    validate: named-checkconf %s
+  notify: Reload named
+
+- name: Create the zone directory
+  ansible.builtin.file:
+    path: "{{ router_zones_dir }}"
+    state: directory
+    owner: root
+    group: bind
+    mode: "0750"
+
+- name: Write the forward zone
+  ansible.builtin.template:
+    src: db.forward.j2
+    dest: "{{ router_zones_dir }}/db.{{ lab_domain }}"
+    owner: root
+    group: bind
+    mode: "0640"
+    validate: "named-checkzone {{ lab_domain }} %s"
+  notify: Reload named
+
+- name: Write the reverse zone of {{ router_zone.key }}
+  ansible.builtin.template:
+    src: db.reverse.j2
+    dest: "{{ router_zones_dir }}/db.{{ router_zone_prefix }}"
+    owner: root
+    group: bind
+    mode: "0640"
+    validate: "named-checkzone {{ router_zone_revname }} %s"
+  vars:
+    router_zone_prefix: "{{ router_zone.value.subnet.split('/')[0].rsplit('.', 1)[0] }}"
+    router_zone_revname: "{{ (router_zone_prefix.split('.') | reverse | join('.')) ~ '.in-addr.arpa' }}"
+  loop: "{{ lab_zones | dict2items }}"
+  loop_control:
+    loop_var: router_zone
+    label: "{{ router_zone.key }}"
+  notify: Reload named
+
+- name: Declare the zones
+  ansible.builtin.template:
+    src: named.conf.local.j2
+    dest: /etc/bind/named.conf.local
+    owner: root
+    group: bind
+    mode: "0644"
+    validate: named-checkconf %s
+  notify: Reload named
+
+- name: Enable and start named
+  ansible.builtin.systemd_service:
+    name: named
+    enabled: true
+    state: started
+
+- name: Apply DNS changes before the resolver moves
+  ansible.builtin.meta: flush_handlers
+
+# the router must never sit without a working resolver, so bind9 proves itself first
+- name: Wait for bind9 to answer for the lab zone
+  ansible.builtin.command: >-
+    dig +short +time=2 +tries=1 @127.0.0.1 {{ router_dns_check_host }}.{{ lab_domain }}
+  register: router_dns_answer
+  changed_when: false
+  until: router_dns_answer.stdout == hostvars[router_dns_check_host].lab_ip
+  retries: 10
+  delay: 2
+
+- name: Stop systemd-resolved on the router
+  ansible.builtin.systemd_service:
+    name: systemd-resolved
+    enabled: false
+    state: stopped
+
+- name: Inspect /etc/resolv.conf
+  ansible.builtin.stat:
+    path: /etc/resolv.conf
+    follow: false
+  register: router_resolv
+
+- name: Remove the resolv.conf symlink into systemd-resolved
+  ansible.builtin.file:
+    path: /etc/resolv.conf
+    state: absent
+  when: router_resolv.stat.islnk | default(false)
+
+- name: Resolve through the local bind9
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # managed by ansible role router
+      nameserver 127.0.0.1
+      search {{ lab_domain }}
+      options timeout:2 attempts:2

@@ -1,0 +1,17 @@
+; managed by ansible role nginx_php
+[www]
+user  = www-data
+group = www-data
+
+listen       = {{ nginx_php_fpm_socket }}
+listen.owner = www-data
+listen.group = www-data
+listen.mode  = 0660
+
+pm = dynamic
+pm.max_children      = {{ nginx_php_max_children }}
+pm.start_servers     = {{ nginx_php_start_servers }}
+pm.min_spare_servers = {{ nginx_php_min_spare_servers }}
+pm.max_spare_servers = {{ nginx_php_max_spare_servers }}
+
+pm.status_path = /fpm-status

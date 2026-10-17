@@ -1,0 +1,95 @@
+---
+- name: Create the download cache
+  ansible.builtin.file:
+    path: "{{ wordpress_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the WP-CLI cache
+  ansible.builtin.file:
+    path: "{{ wordpress_cache_dir }}/wp-cli"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Install WP-CLI
+  ansible.builtin.get_url:
+    url: "{{ wordpress_wpcli_url }}"
+    dest: /usr/local/bin/wp
+    checksum: "{{ wordpress_wpcli_checksum }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the pinned WordPress release
+  ansible.builtin.get_url:
+    url: "{{ wordpress_tarball_url }}"
+    dest: "{{ wordpress_cache_dir }}/wordpress-{{ wordpress_version }}.tar.gz"
+    checksum: "sha256:{{ wordpress_tarball_url }}.sha256"
+    owner: root
+    group: root
+    mode: "0644"
+
+# one verified artifact unpacked on both nodes is what keeps the code byte-identical
+- name: Unpack WordPress into the web root
+  ansible.builtin.unarchive:
+    src: "{{ wordpress_cache_dir }}/wordpress-{{ wordpress_version }}.tar.gz"
+    dest: "{{ wordpress_root }}"
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    creates: "{{ wordpress_root }}/wp-settings.php"
+    owner: www-data
+    group: www-data
+
+- name: Download the pinned WooCommerce release
+  ansible.builtin.get_url:
+    url: "{{ wordpress_woocommerce_url }}"
+    dest: "{{ wordpress_cache_dir }}/woocommerce-{{ wordpress_woocommerce_version }}.zip"
+    checksum: "{{ wordpress_woocommerce_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# unpacked from a file, because DISALLOW_FILE_MODS blocks wp plugin install as well
+- name: Unpack WooCommerce into the plugins directory
+  ansible.builtin.unarchive:
+    src: "{{ wordpress_cache_dir }}/woocommerce-{{ wordpress_woocommerce_version }}.zip"
+    dest: "{{ wordpress_root }}/wp-content/plugins"
+    remote_src: true
+    creates: "{{ wordpress_root }}/wp-content/plugins/woocommerce/woocommerce.php"
+    owner: www-data
+    group: www-data
+
+- name: Write wp-config.php
+  ansible.builtin.template:
+    src: wp-config.php.j2
+    dest: "{{ wordpress_root }}/wp-config.php"
+    owner: root
+    group: www-data
+    mode: "0640"
+  no_log: true
+  diff: false
+
+- name: Install the site and the shop once
+  ansible.builtin.include_tasks: install.yml
+  when: inventory_hostname == wordpress_install_host
+
+# WP-Cron on a single node, so WooCommerce scheduled tasks never run twice
+- name: Schedule WP-Cron on the install node only
+  ansible.builtin.template:
+    src: wordpress-cron.j2
+    dest: /etc/cron.d/wordpress-cron
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == wordpress_install_host
+
+- name: Keep WP-Cron off every other web node
+  ansible.builtin.file:
+    path: /etc/cron.d/wordpress-cron
+    state: absent
+  when: inventory_hostname != wordpress_install_host

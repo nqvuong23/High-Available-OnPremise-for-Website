@@ -1,0 +1,44 @@
+---
+- name: Check the VRRP inputs
+  ansible.builtin.assert:
+    that:
+      - lab_iface != '__not_found__'
+      - keepalived_auth_pass | length <= 8
+    fail_msg: >-
+      [ERROR] no NIC carries {{ lab_ip }}, or the VRRP password is longer than the
+      8 characters the protocol carries
+    quiet: true
+
+- name: Install Keepalived
+  ansible.builtin.apt:
+    name:
+      - keepalived
+      - curl
+    state: present
+
+# enable_script_security refuses a script anyone else can write
+- name: Install the HAProxy check script
+  ansible.builtin.copy:
+    src: chk_haproxy.sh
+    dest: "{{ keepalived_check_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the Keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0640"
+    validate: keepalived --config-test -f %s
+  # holds the VRRP password
+  diff: false
+  notify: Reload keepalived
+
+- name: Enable and start Keepalived
+  ansible.builtin.systemd_service:
+    name: keepalived
+    enabled: true
+    state: started

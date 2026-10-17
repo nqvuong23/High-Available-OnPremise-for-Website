@@ -1,0 +1,37 @@
+# managed by ansible role keepalived
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+vrrp_script chk_haproxy {
+    script "{{ keepalived_check_script }}"
+    interval {{ keepalived_check_interval }}
+    timeout 1
+    fall {{ keepalived_check_fall }}
+    rise {{ keepalived_check_rise }}
+    weight {{ keepalived_check_weight }}
+}
+
+vrrp_instance {{ keepalived_instance }} {
+    state {{ keepalived_state }}
+    # the dmz NIC, found by address; on the NAT NIC the VIP would land on the wrong segment
+    interface {{ lab_iface }}
+    virtual_router_id {{ keepalived_vrid }}
+    priority {{ keepalived_priority }}
+    advert_int {{ keepalived_advert_int }}
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_auth_pass }}
+    }
+
+    virtual_ipaddress {
+        {{ vip_address }}/{{ vip_prefix }}
+    }
+
+    track_script {
+        chk_haproxy
+    }
+}

@@ -1,0 +1,39 @@
+---
+- name: Install HAProxy and its tools
+  ansible.builtin.apt:
+    name:
+      - haproxy
+      - socat
+      - openssl
+      - curl
+    state: present
+
+# the BACKUP node must bind a VIP it does not own yet
+- name: Allow binding the VIP before owning it
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/99-haproxy.conf
+    state: present
+    reload: true
+
+- name: Issue and install the TLS certificate
+  ansible.builtin.import_tasks: pki.yml
+
+- name: Write the HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0640"
+    validate: haproxy -c -f %s
+  # holds the stats password: drift still shows as changed, the content is not printed
+  diff: false
+  notify: Reload haproxy
+
+- name: Enable and start HAProxy
+  ansible.builtin.systemd_service:
+    name: haproxy
+    enabled: true
+    state: started

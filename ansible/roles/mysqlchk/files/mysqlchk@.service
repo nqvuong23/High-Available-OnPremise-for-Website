@@ -1,0 +1,10 @@
+# managed by ansible role mysqlchk
+[Unit]
+Description=mysqlchk per-connection responder
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mysqlchk
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

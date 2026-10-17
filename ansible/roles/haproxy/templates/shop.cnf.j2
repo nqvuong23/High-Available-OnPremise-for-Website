@@ -1,0 +1,15 @@
+# managed by ansible role haproxy
+[req]
+distinguished_name = dn
+req_extensions     = v3_req
+prompt             = no
+
+[dn]
+C  = VN
+O  = Lab
+CN = {{ lab_site_fqdn }}
+
+[v3_req]
+subjectAltName   = DNS:{{ lab_site_fqdn }}, IP:{{ vip_address }}
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth

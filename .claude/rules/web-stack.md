@@ -36,10 +36,10 @@ paths:
 - PHP extensions WooCommerce needs: `mysqlnd`, `gd`, `mbstring`, `xml`, `intl`, `opcache`, `zip`, `curl`.
 - PHP-FPM runs as `www-data`, listens on a unix socket, `pm=dynamic`.
 - Set `pm.max_children` from the real measured memory per process, never by guesswork.
-- Enable `pm.status_path` for `/fpm-status`, restricted to administrative sources and the LBs.
+- Enable `pm.status_path` for `/fpm-status`, restricted to administrative sources and the LBs. Since ADR-25 the nginx `allow`/`deny all` is the only layer in front of it, so test it from a node that is not on the list.
 - Use `set_real_ip_from` with the two LB addresses so Nginx logs the real client IP instead of the LB.
 - Set `client_max_body_size` together with `upload_max_filesize` and `post_max_size` large enough for product images.
-- Nginx listens on the app-zone IP and loopback; it must not bind the temporary NAT NIC.
+- Nginx listens on the app-zone IP and loopback; it must not bind the temporary NAT NIC. With no firewall, that bind address is the whole protection.
 
 ## Health check
 
@@ -74,4 +74,4 @@ paths:
 - Upload an image through web01 and view it through web02, then the other way round.
 - Compare `sha256sum` across the whole code tree on both nodes; it must match exactly.
 - Stop Nginx on one node and confirm HAProxy marks it DOWN within about 6 seconds while the site keeps serving.
-- Confirm a web node cannot reach `192.168.30.11:3306` directly; only the VIP path may work.
+- Confirm what a web node actually gets from `192.168.30.11:3306`: the connection opens, because nothing filters (ADR-25), and MySQL refuses the user. Record the refusal, not a block.

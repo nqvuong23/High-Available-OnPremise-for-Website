@@ -1,0 +1,15 @@
+; managed by ansible role router, reverse zone for {{ router_zone.key }}
+$TTL 3600
+@   IN  SOA ns1.{{ lab_domain }}. admin.{{ lab_domain }}. (
+        {{ router_dns_serial }} 3600 600 604800 3600 )
+@   IN  NS  ns1.{{ lab_domain }}.
+
+{% for host in groups['lab'] if host not in groups['router'] and hostvars[host].lab_zone == router_zone.key %}
+{{ hostvars[host].lab_ip.split('.')[-1] }}  IN  PTR {{ host }}.{{ lab_domain }}.
+{% endfor %}
+{% if vip_address.rsplit('.', 1)[0] == router_zone_prefix %}
+{{ vip_address.split('.')[-1] }}  IN  PTR {{ lab_site_fqdn }}.
+{% endif %}
+{% for router in groups['router'] %}
+{{ router_zone.value.gateway.split('.')[-1] }}  IN  PTR {{ router }}-{{ router_zone.key }}.{{ lab_domain }}.
+{% endfor %}

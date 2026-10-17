@@ -1,0 +1,12 @@
+# managed by ansible role mysqlchk
+[Unit]
+Description=mysqlchk listener for HAProxy
+
+[Socket]
+# zone address only, so the port never appears on the NAT NIC
+ListenStream={{ lab_ip }}:{{ mysqlchk_port }}
+ListenStream=127.0.0.1:{{ mysqlchk_port }}
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

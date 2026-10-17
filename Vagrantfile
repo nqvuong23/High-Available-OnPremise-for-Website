@@ -6,9 +6,12 @@ require "yaml"
 BOX                   = "bento/ubuntu-24.04"
 BOX_VERSION           = "202510.26.0"
 PROVIDER              = "vmware_desktop"
-PUBLIC_KEY_PATH       = "vagrant-provision/ansible-key.pub"
-DESTINATION_PATH      = "/tmp/ansible-key.pub"
 BOOTSTRAP_SCRIPT_PATH = "vagrant-provision/bootstrap.sh"
+PUBLIC_KEY_PATH       = "vagrant-provision/ansible-key.pub"
+PUBLIC_KEY_TMP_PATH   = "/tmp/ansible-key.pub"
+PRIVATE_KEY_PATH      = "vagrant-provision/ansible-key"
+PRIVATE_KEY_TMP_PATH  = "/tmp/ansible-key"
+PRIVATE_KEY_DEST_PATH = "/home/vagrant/.ssh/ansible-key"
 NETMASK               = "255.255.255.0"
 IPV4_CIDR             = 24
 MAC_PREFIX            = "00:50:56"
@@ -16,6 +19,7 @@ GATEWAY_OCTET         = 254
 LAB_ROUTE_METRIC      = 600
 SEARCH_DOMAIN         = "lab.internal"
 ROUTER_NAME           = "fw01"
+CONTROL_NAME          = "mgmt01"
 
 ZONES = [
   { name: "dmz",    subnet: "192.168.10.0/24" },
@@ -149,7 +153,7 @@ Vagrant.configure("2") do |config|
         sleep 2
       SHELL
 
-      # Minimum forwarding so Ansible can reach every zone; role firewall owns the real policy
+      # Minimum forwarding so Ansible can reach every zone; role router adds masquerade
       if node[:name] == ROUTER_NAME
         m.vm.provision "shell", name: "router-forwarding", inline: <<~SHELL
           set -eu
@@ -161,10 +165,24 @@ Vagrant.configure("2") do |config|
 
       m.vm.provision "file",
         source: PUBLIC_KEY_PATH, 
-        destination: DESTINATION_PATH
+        destination: PUBLIC_KEY_TMP_PATH
 
       m.vm.provision "shell", name: "bootstrap",
         path: BOOTSTRAP_SCRIPT_PATH
+
+      # only the control node gets the private half; it is what Ansible authenticates with
+      if node[:name] == CONTROL_NAME
+        m.vm.provision "file",
+          source: PRIVATE_KEY_PATH,
+          destination: PRIVATE_KEY_TMP_PATH
+
+        m.vm.provision "shell", name: "ansible-key", inline: <<~SHELL
+          set -eu
+
+          install -m 600 -o vagrant -g vagrant "#{PRIVATE_KEY_TMP_PATH}" "#{PRIVATE_KEY_DEST_PATH}"
+          rm -f "#{PRIVATE_KEY_TMP_PATH}"
+        SHELL
+      end
     end
   end
 end

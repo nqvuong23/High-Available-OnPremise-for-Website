@@ -1,0 +1,73 @@
+---
+- name: Install Nginx, PHP-FPM and the WooCommerce extensions
+  ansible.builtin.apt:
+    name: "{{ nginx_php_packages }}"
+    state: present
+
+# the packaged default site would answer on every address and hide shop.conf mistakes
+- name: Remove the default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Nginx config changed
+
+- name: Run Nginx as www-data
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^user\s'
+    line: user www-data;
+  notify: Nginx config changed
+
+- name: Write the shop site
+  ansible.builtin.template:
+    src: shop.conf.j2
+    dest: /etc/nginx/conf.d/shop.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Nginx config changed
+
+# a pool file without the [www] header fails with "unknown entry 'user'" at line 1
+- name: Write the PHP-FPM pool
+  ansible.builtin.template:
+    src: www.conf.j2
+    dest: "{{ nginx_php_fpm_dir }}/pool.d/www.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: PHP-FPM config changed
+
+- name: Write the PHP limits for uploads
+  ansible.builtin.template:
+    src: 99-lab.ini.j2
+    dest: "{{ nginx_php_fpm_dir }}/conf.d/99-lab.ini"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: PHP-FPM config changed
+
+- name: Create the web root
+  ansible.builtin.file:
+    path: "{{ wordpress_root }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+# shallow on purpose: a DB or NFS check here would drop both web nodes at once, see ADR-05
+- name: Install the health check endpoint
+  ansible.builtin.copy:
+    src: healthz.php
+    dest: "{{ wordpress_root }}/healthz.php"
+    owner: www-data
+    group: www-data
+    mode: "0644"
+
+- name: Enable and start Nginx and PHP-FPM
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - nginx
+    - "{{ nginx_php_fpm_service }}"

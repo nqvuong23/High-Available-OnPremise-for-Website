@@ -191,8 +191,8 @@ apt-get install -y tcpdump lsof sysstat conntrack auditd
 ## fw01
 
 Already done: static IPs in all 4 zones, `ip_forward`, chrony and bind9 per `deploy-v1.md`.
-Remaining: make `ip_forward` survive a reboot, add the `nftables` zone policy, and stop
-`ufw` from filtering forwarded traffic.
+Remaining: make `ip_forward` survive a reboot and add the masquerade rule. There is no zone
+policy and no host firewall; see ADR-25.
 
 ### 1. Persist kernel forwarding
 
@@ -204,23 +204,23 @@ sysctl --system
 sysctl net.ipv4.ip_forward
 ```
 
-### 2. Hand the FORWARD chain to nftables only
-
-`ufw` on a routing node also filters FORWARD. Two tools deciding the same packet is how
-a routing rule and a firewall rule end up silently contradicting each other, so `ufw`
-is scoped to traffic addressed to the router itself.
-
-Edit `/etc/default/ufw`:
-
-```
-DEFAULT_FORWARD_POLICY="ACCEPT"
-```
+### 2. Take ufw off every node
 
 ```bash
-ufw reload
+ufw disable
+apt-get purge -y ufw
 ```
 
-### 3. Zone forward policy
+Run this on all 10 nodes, `fw01` included. ADR-25 removed the firewall layer entirely, and
+the package is purged rather than left disabled so "is a rule blocking this?" is never a
+hypothesis during a drill. Purging also removes `/etc/default/ufw`, which is what used to
+make `ufw` filter the FORWARD chain on a routing node and silently contradict the routing.
+
+### 3. Masquerade only
+
+The one netfilter rule the lab keeps. Without it a node loses internet access the moment
+its own NAT NIC is removed, because the VMware NAT gateway has no route back into the
+host-only zones.
 
 Find the NAT interface name first; never copy an interface name from this document.
 
@@ -233,51 +233,12 @@ Write `/etc/nftables.conf`, replacing `<nat-nic>`:
 ```
 #!/usr/sbin/nft -f
 
-# delete only this table, so a reload cannot wipe the ufw tables
-table inet router
-delete table inet router
 table ip router_nat
 delete table ip router_nat
 
 define NAT_IF = "<nat-nic>"
-define APP   = 192.168.20.0/24
-define DB    = 192.168.30.0/24
-define VIP   = 192.168.10.100
-define LBS   = { 192.168.10.11, 192.168.10.12 }
-define WEBS  = { 192.168.20.11, 192.168.20.12 }
-define DBS   = { 192.168.30.11, 192.168.30.12 }
-define ADMIN = { 172.16.10.11, 172.16.10.21 }
 
-table inet router {
-    chain forward {
-        type filter hook forward priority filter; policy drop;
-
-        ct state established,related accept
-
-        # admin -> everything it is allowed to reach
-        ip saddr $ADMIN tcp dport 22 accept
-        ip saddr $ADMIN ip daddr $VIP  tcp dport { 80, 443, 3306 } accept
-        ip saddr $ADMIN ip daddr $LBS  tcp dport 8404 accept
-        ip saddr $ADMIN ip daddr $WEBS tcp dport 80 accept
-        ip saddr $ADMIN ip daddr $DBS  tcp dport { 3306, 9200 } accept
-
-        # lb -> web, request forwarding and health checks
-        ip saddr $LBS ip daddr $WEBS tcp dport 80 accept
-
-        # lb -> db, proxied mysql and mysqlchk
-        ip saddr $LBS ip daddr $DBS tcp dport { 3306, 9200 } accept
-
-        # web -> VIP, WordPress reaches mysql only through HAProxy
-        ip saddr $WEBS ip daddr $VIP tcp dport 3306 accept
-
-        # internet egress for every zone
-        oifname $NAT_IF accept
-
-        # denied on purpose, logged because a chaos scenario asserts it
-        ip saddr $APP ip daddr $DB log prefix "[DROP] app to db direct " drop
-    }
-}
-
+# NAT, not a firewall: policy accept, nothing is ever dropped
 table ip router_nat {
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
@@ -289,11 +250,21 @@ table ip router_nat {
 ```bash
 nft -c -f /etc/nftables.conf
 systemctl enable --now nftables
-nft list ruleset | head -40
+nft list ruleset
 ```
 
-`nft -c` validates without loading. Never load an unchecked ruleset on the one node
-every cross-zone flow depends on.
+`nft -c` validates without loading. Never load an unchecked ruleset on the one node every
+cross-zone flow depends on.
+
+The output must show this table and nothing else. No `filter` chain, no `drop`, on `fw01`
+or anywhere. On the other nine nodes `nftables.service` stays stopped, so their ruleset is
+empty; the `nft` binary stays installed because three chaos scenarios inject a rule with it
+and delete it again on rollback.
+
+What this costs is worth stating plainly: the app zone can now reach
+`192.168.30.11:3306` directly, so the zone split is a design and routing boundary rather
+than an enforced one, and every service's own access control is the only layer left. That
+is the trade in ADR-25.
 
 ### 4. Add the missing DNS records
 
@@ -346,7 +317,7 @@ what matters:
 3. Disable NFSv3 in `/etc/nfs.conf`, mask `rpcbind` and `rpc-statd`.
 4. Create `/srv/nfs/uploads`, owner `www-data:www-data`, mode `2775`.
 5. Export it to `192.168.20.11` and `192.168.20.12` only, `rw,sync,no_subtree_check`.
-6. Open TCP 2049 in `ufw` to those two addresses, and to nothing else.
+6. Nothing to open: there is no firewall, so `/etc/exports` is the only access control.
 
 ```bash
 id www-data                      # expect 33:33 on all three nodes
@@ -618,24 +589,23 @@ Then prove it over the real path, from `lb01`, because that is the client that m
 curl -sS -m 3 -o /dev/null -w '%{http_code}\n' http://192.168.30.11:9200/   # expect 200
 ```
 
-### 8. Firewall
+### 8. No firewall, so check what is listening instead
+
+ADR-25 means 3306 and 9200 are reachable from every zone that can route here. Confirm the
+sockets are at least bound where they should be:
 
 ```bash
-ufw default deny incoming
-ufw allow from 172.16.10.11 to any port 22 proto tcp comment 'ssh mgmt01'
-ufw allow from 192.168.30.1 to any port 22 proto tcp comment 'ssh host adapter'
-ufw allow from 192.168.10.11 to any port 3306 proto tcp comment 'mysql lb01'
-ufw allow from 192.168.10.12 to any port 3306 proto tcp comment 'mysql lb02'
-ufw allow from 192.168.30.12 to any port 3306 proto tcp comment 'replication db02'
-ufw allow from 172.16.10.11 to any port 3306 proto tcp comment 'mysql mgmt01'
-ufw allow from 192.168.10.11 to any port 9200 proto tcp comment 'mysqlchk lb01'
-ufw allow from 192.168.10.12 to any port 9200 proto tcp comment 'mysqlchk lb02'
-ufw --force enable
-ufw status verbose
+ss -tlnp | grep -E ':(3306|9200)'
 ```
 
-Keep SSH open on the NAT NIC until the NAT NIC is removed, otherwise `vagrant ssh`
-dies mid-build. Add `ufw allow 22/tcp` temporarily if you still need it.
+Expect `192.168.30.11` and `127.0.0.1`, never `0.0.0.0` and never the NAT address. That
+`bind_address` line in `zz-lab.cnf` is now the only thing keeping MySQL off the NAT
+segment, so read it as load-bearing rather than tidy.
+
+The access control that remains is the GRANT host pattern: the application user exists only
+for `192.168.10.%`, which is why a web node connecting directly to this port fails at
+authentication rather than at the network. That is a weaker boundary than a dropped packet
+and belongs in the known limitations.
 
 ---
 
@@ -714,13 +684,11 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9200/    # expect 503
 503 is the correct answer on a replica. That difference is the whole mechanism HAProxy
 uses to find the writable node.
 
-### 5. Firewall
+### 5. No firewall here either
 
-Same as db01, with the replication peer changed to db01:
-
-```bash
-ufw allow from 192.168.30.11 to any port 3306 proto tcp comment 'replication db01'
-```
+Same as db01: check the bind addresses, not a rule set. Replication reaches this node on
+`192.168.30.12:3306` from `192.168.30.11`, inside the db zone, so it never crosses the
+router at all.
 
 ### 6. Verify the database layer
 
@@ -1043,28 +1011,24 @@ The instance must bind the dmz NIC. On the NAT NIC the VIP appears on the wrong
 segment and nothing reaches it. `advert_int 1` puts detection near 3 seconds, inside
 the under-6-second target.
 
-### 7. Firewall
+### 7. No firewall, which removes a classic VRRP trap
 
-`ufw` has no `proto vrrp`, so IP protocol 112 goes in `/etc/ufw/before.rules`, above
-the final `COMMIT`:
+Nothing to configure. This step used to be the fiddly one, because `ufw` has no
+`proto vrrp` and IP protocol 112 had to go into `/etc/ufw/before.rules` by hand; forget it
+and the BACKUP hears nothing, declares the MASTER dead and claims the VIP, which is a
+split brain caused entirely by the firewall. ADR-25 deletes that whole failure mode.
 
-```
--A ufw-before-input -p 112 -s 192.168.10.0/24 -j ACCEPT
--A ufw-before-output -p 112 -d 224.0.0.18 -j ACCEPT
-```
+Scenario 05 still reproduces it on purpose, by injecting a `inet lab_chaos` table that
+drops protocol 112, and `05-rollback.sh` deletes the table again. Confirm the LB is clean
+before and after:
 
 ```bash
-ufw default deny incoming
-ufw allow from 172.16.10.11 to any port 22 proto tcp comment 'ssh mgmt01'
-ufw allow from 192.168.10.1 to any port 22 proto tcp comment 'ssh host adapter'
-ufw allow from 172.16.10.11 to any port 80,443 proto tcp comment 'site mgmt01'
-ufw allow from 192.168.10.1 to any port 80,443 proto tcp comment 'site host browser'
-ufw allow from 172.16.10.11 to any port 8404 proto tcp comment 'stats mgmt01'
-ufw allow from 192.168.20.11 to any port 3306 proto tcp comment 'mysql web01'
-ufw allow from 192.168.20.12 to any port 3306 proto tcp comment 'mysql web02'
-ufw --force enable
-ufw status verbose
+sudo nft list ruleset        # must be empty on an LB
 ```
+
+Check the stats port instead, since nothing filters it: `fe_stats` must bind
+`192.168.10.11:8404` and not `0.0.0.0`, because that bind address is now the only thing
+limiting who can reach the stats page.
 
 ---
 
@@ -1080,10 +1044,10 @@ The same node as lb01 with four values changed. Any other difference is a bug.
 | 4. Logging and rotation | same, unchanged |
 | 5. Keepalived check script | same, unchanged |
 | 6. Keepalived | `router_id lb02`, `state BACKUP`, `priority 100` |
-| 7. Firewall | same rules, unchanged, including the `before.rules` VRRP lines |
+| 7. Firewall | nothing to do on either node |
 
 So the four values are three in `keepalived.conf` and one in `haproxy.cfg`. The sysctl
-drop-in, `chk_haproxy.sh`, the rsyslog file and the `ufw` rules are identical.
+drop-in, `chk_haproxy.sh` and the rsyslog file are identical.
 
 ### Why lb02 needs ip_nonlocal_bind, and lb01 does too
 
@@ -1147,7 +1111,7 @@ than guessing, because each one points at a different layer:
 
 | HAProxy reason | Where to look |
 |---|---|
-| `Layer4 timeout` | the packet never arrived: `ufw` on db01, or the `nftables` forward policy |
+| `Layer4 timeout` | the packet never arrived: routing, or `bind_address` on db01. No firewall can cause this one |
 | `Layer4 connection problem, Connection refused` | nothing is listening: `mysqlchk.socket` is not started |
 | `Socket error, ECONNRESET` | accepted then reset: the responder is at fault, not the network |
 | `Layer7 wrong status, code: 503` | mysqlchk answered honestly — that node really is read-only |
@@ -1540,18 +1504,17 @@ WooCommerce scheduled tasks run twice:
 */5 * * * * www-data cd /var/www/wordpress && /usr/local/bin/wp cron event run --due-now >/dev/null 2>&1
 ```
 
-### 10. Firewall
+### 10. No firewall, so check the nginx allow lists instead
+
+Port 80 is reachable from every zone. What limits the sensitive paths is nginx itself:
 
 ```bash
-ufw default deny incoming
-ufw allow from 172.16.10.11 to any port 22 proto tcp comment 'ssh mgmt01'
-ufw allow from 192.168.20.1 to any port 22 proto tcp comment 'ssh host adapter'
-ufw allow from 192.168.10.11 to any port 80 proto tcp comment 'http lb01'
-ufw allow from 192.168.10.12 to any port 80 proto tcp comment 'http lb02'
-ufw allow from 172.16.10.11 to any port 80 proto tcp comment 'http mgmt01 direct test'
-ufw --force enable
-ufw status verbose
+grep -A6 'location = /fpm-status' /etc/nginx/conf.d/shop.conf
 ```
+
+`/fpm-status` must list the admin and LB addresses and end with `deny all`. That `deny all`
+is now the only thing in front of it, so treat it as load-bearing and test it from a node
+that is not on the list.
 
 ---
 
@@ -1769,12 +1732,14 @@ dig @<fw01-nat-ip> shop.lab.internal             # must time out or be refused
 sudo nmap -sS -p- 192.168.10.11,12 192.168.20.11,12,21 192.168.30.11,12
 ```
 
-Compare every open port against the matrix in `network-firewall.md`. An unexpected open
-port is a finding, not a detail.
+Nothing filters, so every listening socket shows as open. The finding is therefore a
+service bound wider than it should be, not a missing rule: compare the result against the
+listen addresses in `network-firewall.md`, and expect to see ports that used to be
+filtered. `bind_address`, `listen-on` and nginx `allow` are the only boundaries left.
 
 ## Acceptance checklist
 
-- [ ] `nft list ruleset` on `fw01` shows the forward policy, and `ufw` forward policy is ACCEPT.
+- [ ] `nft list ruleset` on `fw01` shows the masquerade table and nothing else; empty on all nine other nodes, and `ufw` is not installed anywhere.
 - [ ] `traceroute` from web01 to db01 shows exactly one hop at `192.168.20.254`.
 - [ ] Replication: `Replica_IO_Running` and `Replica_SQL_Running` both `Yes`.
 - [ ] `Rpl_semi_sync_source_status` is `ON` and `Rpl_semi_sync_source_clients` is 1.
@@ -1806,12 +1771,13 @@ coded or rolled back immediately.
 
 | Role | Tasks from this document |
 |---|---|
-| `firewall` | sysctl forwarding, `DEFAULT_FORWARD_POLICY=ACCEPT`, template `nftables.conf` with `nft -c` validation before reload |
+| `common` | purge `ufw`, keep `nftables.service` stopped outside the router |
+| `router` | sysctl forwarding, template `nftables.conf` with the masquerade rule only, `nft -c` validation before reload |
 | `mysql` | Oracle repo and apt pin, `zz-lab.cnf` with `server_id` from inventory, root `.my.cnf`, users from Vault, heartbeat table and event, replication wired with `SOURCE_*` |
 | `mysqlchk` | `mysqlchk.cnf`, the responder script, the socket and template units with the zone address from a variable |
 | `pki` | CA and server certificate with `community.crypto`, SAN from a variable, `shop.pem` mode 600, CA pushed to `mgmt01` |
 | `haproxy` | PPA and key, `haproxy.cfg` template validated with `haproxy -c -f %s`, rsyslog file, logrotate check |
-| `keepalived` | `keepalived.conf` with `priority` and `state` from inventory, `lab_iface` variable, check script, `before.rules` VRRP lines |
+| `keepalived` | `keepalived.conf` with `priority` and `state` from inventory, `lab_iface` variable, check script |
 | `nginx_php` | nginx.org repo and key, `user www-data`, `shop.conf` with the zone address from a variable, pool and ini drop-ins, `healthz.php` |
 | `wordpress` | pinned tarball with checksum, WooCommerce zip, `wp-config.php` from a template with Vault salts, `wp core install` with `run_once` and a guard, cron file on one node only |
 | `nfs_client` | pin `www-data` 33:33, `nfs-common`, mount point, `fstab`, mount |
@@ -1828,11 +1794,19 @@ Idempotency traps that would break the `changed=0` requirement:
 
 # Known limitations recorded by this document
 
+- No firewall on any node and no zone policy on the router; see ADR-25. The four zones are
+  still routed and still separate broadcast domains, but nothing enforces which pairs may
+  talk, so `web01` can open `192.168.30.11:3306` directly and the only thing that stops it
+  succeeding is the GRANT host pattern. "Denied on purpose" flows in
+  `network-firewall.md` are now design intent, not enforcement, and the port scan proves
+  reachability rather than policy.
 - `DB_HOST` points at the VIP, so every query crosses `fw01` twice and the router sits
   in the write path. Already listed as a limitation of ADR-18; this document makes it
   concrete.
-- The MySQL application user is granted on the two LB addresses only. A `ufw` or grant
-  change that makes `192.168.20.%` work means traffic stopped going through the LB.
+- The MySQL application user is granted on the two LB addresses only. With no firewall that
+  GRANT is the only thing stopping a web node writing straight to the db zone, so a grant
+  change that makes `192.168.20.%` work means traffic stopped going through the LB and
+  nothing else will say so.
 - `pm.max_children = 12` is a guess until M7 measures it. Note it as unmeasured rather
   than presenting it as tuned.
 - Cash on delivery is the only payment method, so the order path never exercises an

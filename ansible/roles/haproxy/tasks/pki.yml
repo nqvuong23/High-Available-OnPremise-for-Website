@@ -1,0 +1,138 @@
+---
+# The CA key is generated on one LB and never leaves it; every LB gets the same bundle.
+
+- name: Create the CA directory on the PKI host
+  ansible.builtin.file:
+    path: "{{ haproxy_pki_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Generate the CA private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out lab-ca.key 4096
+    chdir: "{{ haproxy_pki_dir }}"
+    creates: "{{ haproxy_pki_dir }}/lab-ca.key"
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Generate the self-signed CA certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -new
+      - -nodes
+      - -key
+      - lab-ca.key
+      - -sha256
+      - -days
+      - "{{ haproxy_ca_days }}"
+      - -subj
+      - "{{ haproxy_ca_subject }}"
+      - -out
+      - lab-ca.crt
+    chdir: "{{ haproxy_pki_dir }}"
+    creates: "{{ haproxy_pki_dir }}/lab-ca.crt"
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Generate the server private key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out shop.key 2048
+    chdir: "{{ haproxy_pki_dir }}"
+    creates: "{{ haproxy_pki_dir }}/shop.key"
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+# the SAN is what clients validate; the CN is ignored by modern clients
+- name: Write the server certificate request config
+  ansible.builtin.template:
+    src: shop.cnf.j2
+    dest: "{{ haproxy_pki_dir }}/shop.cnf"
+    owner: root
+    group: root
+    mode: "0600"
+  register: haproxy_csr_config
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Check for an existing server certificate
+  ansible.builtin.stat:
+    path: "{{ haproxy_pki_dir }}/shop.crt"
+  register: haproxy_server_cert
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Create the server certificate request
+  ansible.builtin.command:
+    cmd: openssl req -new -key shop.key -out shop.csr -config shop.cnf
+    chdir: "{{ haproxy_pki_dir }}"
+  changed_when: true
+  when: haproxy_csr_config.changed or not haproxy_server_cert.stat.exists
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Sign the server certificate with the lab CA
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -req
+      - -in
+      - shop.csr
+      - -CA
+      - lab-ca.crt
+      - -CAkey
+      - lab-ca.key
+      - -CAcreateserial
+      - -out
+      - shop.crt
+      - -days
+      - "{{ haproxy_cert_days }}"
+      - -sha256
+      - -extfile
+      - shop.cnf
+      - -extensions
+      - v3_req
+    chdir: "{{ haproxy_pki_dir }}"
+  changed_when: true
+  when: haproxy_csr_config.changed or not haproxy_server_cert.stat.exists
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Read the certificate, chain and key
+  ansible.builtin.slurp:
+    src: "{{ haproxy_pki_dir }}/{{ item }}"
+  loop:
+    - shop.crt
+    - lab-ca.crt
+    - shop.key
+  register: haproxy_pki_files
+  no_log: true
+  delegate_to: "{{ haproxy_pki_host }}"
+  run_once: true
+
+- name: Create the certificate directory
+  ansible.builtin.file:
+    path: "{{ haproxy_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# HAProxy wants leaf, chain and key in one file, leaf first
+- name: Install the certificate bundle
+  ansible.builtin.copy:
+    dest: "{{ haproxy_pem }}"
+    content: "{{ haproxy_pki_files.results | map(attribute='content') | map('b64decode') | join('') }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+  notify: Reload haproxy

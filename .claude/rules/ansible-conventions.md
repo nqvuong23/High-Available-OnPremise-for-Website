@@ -25,10 +25,10 @@ paths:
 - Every role has `defaults/`, `tasks/`, `templates/` and `handlers/` as needed.
 - One distro family means no `tasks/RedHat.yml` and `tasks/Debian.yml` split; keep a single task path and do not add per-OS branching for a case that cannot occur.
 - `mgmt01` is the control node and configures itself, so keep whatever targets it in a separate play rather than in `site.yml`'s managed-node run.
-- `site.yml` calls roles in dependency order: firewall -> common -> nfs -> mysql -> mysqlchk -> web -> haproxy -> keepalived -> monitoring.
+- `site.yml` calls roles in dependency order: common -> router -> nfs -> mysql -> mysqlchk -> haproxy -> keepalived -> web -> mgmt -> monitoring. There is no firewall play; see ADR-25.
 - `fw01` must be configured before any role that depends on cross-zone reachability, and now also before anything that needs DNS or NTP, because it serves both.
 - Monitoring runs last: `monitoring_agent` on every managed node, `monitoring_server` on `mon01`.
-- Group the inventory two ways: by role (`firewall`, `lb`, `web`, `db`, `nfs`, `mon`) and by zone (`dmz`, `app`, `dbzone`, `client`).
+- Group the inventory two ways: by role (`router`, `lb`, `web`, `db`, `nfs`, `mgmt`, `mon`) and by zone (`dmz`, `app`, `dbzone`, `client`).
 - Variables used in more than one place, such as the VIP, the domain, the zone subnets, the gateway octet and UID/GID, are defined **once** in `group_vars`.
 
 ## Idempotency
@@ -37,14 +37,14 @@ paths:
 - When `command` is unavoidable, declare `changed_when` or `creates` so it cannot report a false change.
 - Verify by running `site.yml` a second time; wherever a `changed` remains, fix that task.
 - Use `ansible-playbook site.yml --check --diff` to detect configuration edited by hand on a node.
-- Routing and firewall tasks are the usual source of false changes; use `community.general.ufw` and template-plus-validate for nftables, and compare current state before writing.
+- Routing tasks are the usual source of false changes; template-plus-validate the masquerade file and compare current state before writing. No role may add a filter rule, and `community.general.ufw` is used in exactly one place, to disable `ufw` before the `common` role purges it.
 
 ## Safe configuration changes
 
 - Every config template must have a `validate:` or a handler that checks syntax before the service reloads.
-- Examples: `nginx -t` for Nginx, `haproxy -c -f %s` for HAProxy, `visudo -cf %s` for sudoers, `mysqld --validate-config` for MySQL, `nft -c -f %s` for nftables.
+- Examples: `nginx -t` for Nginx, `haproxy -c -f %s` for HAProxy, `visudo -cf %s` for sudoers, `mysqld --validate-config` for MySQL, `nft -c -f %s` for the masquerade file.
 - Never reload or restart a service whose config file has not passed a syntax check.
-- Network changes are the dangerous class: a bad netplan or nftables apply can lock Ansible out. Stage them so the previous state is restored if connectivity is lost.
+- Network changes are the dangerous class: a bad netplan apply can lock Ansible out. Stage them so the previous state is restored if connectivity is lost. Dropping the firewall removed the other way to do this, which was the point of ADR-25.
 
 ## Secrets
 

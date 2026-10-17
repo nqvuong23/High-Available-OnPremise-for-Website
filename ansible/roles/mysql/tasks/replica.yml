@@ -1,0 +1,50 @@
+---
+- name: Read the replication state
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query: SHOW REPLICA STATUS
+  register: mysql_replica_status
+  changed_when: false
+
+# configured once; an operator who stopped replication on purpose is never overridden
+- name: Point the replica at the primary
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query: >-
+      CHANGE REPLICATION SOURCE TO
+      SOURCE_HOST = '{{ hostvars[mysql_primary_host].lab_ip }}',
+      SOURCE_PORT = {{ mysql_port | int }},
+      SOURCE_USER = '{{ mysql_repl_user }}',
+      SOURCE_PASSWORD = %(password)s,
+      SOURCE_AUTO_POSITION = 1,
+      SOURCE_CONNECT_RETRY = {{ mysql_source_connect_retry | int }},
+      GET_SOURCE_PUBLIC_KEY = 1
+    named_args:
+      password: "{{ mysql_repl_password }}"
+  no_log: true
+  changed_when: true
+  when: mysql_replica_status.query_result[0] | length == 0
+
+- name: Start replication
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query: START REPLICA
+  changed_when: true
+  when: mysql_replica_status.query_result[0] | length == 0
+
+- name: Wait for both replication threads to run
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query: SHOW REPLICA STATUS
+  register: mysql_replica_running
+  changed_when: false
+  until: >-
+    mysql_replica_running.query_result[0] | length > 0 and
+    mysql_replica_running.query_result[0][0].Replica_IO_Running == 'Yes' and
+    mysql_replica_running.query_result[0][0].Replica_SQL_Running == 'Yes'
+  retries: 15
+  delay: 2

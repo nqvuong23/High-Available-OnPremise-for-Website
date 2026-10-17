@@ -1,0 +1,24 @@
+#!/bin/bash
+# 200 = writable, 503 = read-only; HAProxy routes MySQL by this answer
+set -u
+
+# read the request away first: closing a socket that still holds unread data makes the
+# kernel send RST instead of FIN, and HAProxy reports that as a check socket error
+while IFS= read -r -t 1 line; do
+    [ -z "${line%$'\r'}" ] && break
+done
+
+ro=$(mysql --defaults-file=/etc/mysql/mysqlchk.cnf -N -B \
+     -e 'SELECT @@read_only + @@super_read_only' 2>/dev/null)
+
+if [ "${ro:-}" = "0" ]; then
+    status='200 OK'
+    body='[OK] db writable'
+else
+    status='503 Service Unavailable'
+    body='[WARN] db read-only'
+fi
+
+# without Content-Length HAProxy reads to connection close, so any abrupt close fails the check
+printf 'HTTP/1.1 %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+    "$status" "${#body}" "$body"

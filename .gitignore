@@ -24,6 +24,8 @@ ansible/collections/
 diagnostics/
 loadtest/results/
 *.log
+scripts/*/logs/
+scripts/*/.state
 
 # OS and editor noise
 .DS_Store

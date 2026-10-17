@@ -1,0 +1,7 @@
+# managed by ansible role router: serve time to the lab zones
+{% for subnet in zone_subnets %}
+allow {{ subnet }}
+{% endfor %}
+
+# keep serving a consistent clock when upstream is unreachable
+local stratum {{ router_ntp_local_stratum }}

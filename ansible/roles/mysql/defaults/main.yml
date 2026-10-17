@@ -1,0 +1,16 @@
+---
+mysql_socket: /run/mysqld/mysqld.sock
+mysql_buffer_pool_size: 768M
+mysql_binlog_expire_seconds: 604800
+mysql_semi_sync_timeout_ms: 3000
+# the MySQL default of 60 s would stretch every recovery by up to a minute
+mysql_source_connect_retry: 10
+
+mysql_is_primary: "{{ inventory_hostname == mysql_primary_host }}"
+
+# Opening write is guarded by a check that every peer is read-only.
+# Set false to leave the primary read-only for an operator, as runbook RB-04 does.
+mysql_open_primary_write: true
+
+# replication stays inside the db zone, so the account is granted there only
+mysql_repl_host_pattern: "{{ lab_zones[lab_zone].subnet.split('/')[0].rsplit('.', 1)[0] }}.%"

@@ -1,0 +1,73 @@
+# managed by ansible role haproxy; identical on every LB except the stats bind
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+    ssl-default-bind-ciphers {{ haproxy_ssl_ciphers }}
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    retries 3
+    option  redispatch
+    # allow for two routed hops; too tight reads a router hop as a failure
+    timeout connect 5s
+    timeout client  30s
+    timeout server  30s
+    timeout http-request 10s
+
+frontend fe_http
+    bind {{ vip_address }}:80
+    bind 127.0.0.1:80
+    # answered by HAProxy itself, so Keepalived can test it is really serving
+    monitor-uri /haproxy-alive
+    http-request redirect scheme https code 301 unless { path /haproxy-alive }
+
+frontend fe_https
+    bind {{ vip_address }}:443 ssl crt {{ haproxy_pem }}
+    option forwardfor
+    http-request set-header X-Forwarded-Proto https
+    default_backend be_web
+
+backend be_web
+    balance roundrobin
+    cookie SRV insert indirect nocache
+    option httpchk
+    http-check send meth GET uri /healthz.php
+    http-check expect status 200
+    default-server check {{ haproxy_check_params }}
+{% for host in groups['web'] %}
+    server {{ host }} {{ hostvars[host].lab_ip }}:80 cookie w{{ loop.index }}
+{% endfor %}
+
+# TCP on 3306 but health checked over HTTP on mysqlchk: HAProxy asks "are you writable"
+listen mysql
+    bind {{ vip_address }}:{{ mysql_port }}
+    mode tcp
+    option tcplog
+    balance first
+    option httpchk
+    http-check send meth GET uri /
+    http-check expect status 200
+    default-server check port {{ mysqlchk_port }} {{ haproxy_check_params }} on-marked-down shutdown-sessions
+{% for host in groups['db'] %}
+    server {{ host }} {{ hostvars[host].lab_ip }}:{{ mysql_port }}{{ '' if host == mysql_primary_host else ' disabled' }}
+{% endfor %}
+
+frontend fe_stats
+    bind {{ lab_ip }}:{{ haproxy_stats_port }}
+    bind 127.0.0.1:{{ haproxy_stats_port }}
+    mode http
+    stats enable
+    stats uri /stats
+    stats refresh 5s
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
+    stats admin if TRUE

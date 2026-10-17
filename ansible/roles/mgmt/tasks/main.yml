@@ -1,0 +1,95 @@
+---
+- name: Install the operator tools
+  ansible.builtin.apt:
+    name: "{{ mgmt_packages }}"
+    state: present
+
+- name: Add the k6 repository
+  ansible.builtin.deb822_repository:
+    name: k6
+    types: deb
+    uris: https://dl.k6.io/deb
+    suites: stable
+    components: main
+    signed_by: https://dl.k6.io/key.gpg
+  when: mgmt_install_k6 | bool
+
+- name: Install k6
+  ansible.builtin.apt:
+    name: k6
+    state: present
+    update_cache: true
+  when: mgmt_install_k6 | bool
+
+# without the CA, curl from the test client fails and it looks like an HAProxy fault
+- name: Read the lab CA certificate
+  ansible.builtin.slurp:
+    src: /root/ca/lab-ca.crt
+  register: mgmt_ca
+  delegate_to: "{{ groups['lb'][0] }}"
+
+- name: Trust the lab CA
+  ansible.builtin.copy:
+    dest: "{{ mgmt_ca_cert }}"
+    content: "{{ mgmt_ca.content | b64decode }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update CA certificates
+
+- name: Create the lab configuration directory
+  ansible.builtin.file:
+    path: /etc/lab
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the lab topology for the scenario scripts
+  ansible.builtin.template:
+    src: lab.env.j2
+    dest: "{{ mgmt_env_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the private credentials directory
+  ansible.builtin.file:
+    path: "{{ mgmt_private_dir }}"
+    state: directory
+    owner: "{{ lab_operator_user }}"
+    group: "{{ lab_operator_user }}"
+    mode: "0700"
+
+- name: Write the operator credentials
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ mgmt_private_dir }}/{{ item }}"
+    owner: "{{ lab_operator_user }}"
+    group: "{{ lab_operator_user }}"
+    mode: "0600"
+  loop:
+    - wp.cnf
+    - ops.cnf
+    - secrets.env
+  no_log: true
+  diff: false
+
+- name: Make every lab node reachable by name over SSH
+  ansible.builtin.blockinfile:
+    path: "{{ mgmt_home }}/.ssh/config"
+    create: true
+    owner: "{{ lab_operator_user }}"
+    group: "{{ lab_operator_user }}"
+    mode: "0600"
+    marker: "# {mark} ANSIBLE MANAGED LAB HOSTS"
+    block: |
+      {% for host in groups['lab'] if host not in groups['mgmt'] %}
+      Host {{ host }}
+          HostName {{ hostvars[host].lab_ip }}
+          User {{ lab_operator_user }}
+          IdentityFile {{ mgmt_ssh_key }}
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+          LogLevel ERROR
+      {% endfor %}

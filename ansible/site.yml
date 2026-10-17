@@ -1,0 +1,69 @@
+---
+# One run builds the whole lab from the Vagrant base snapshot, bottom-up:
+# router -> storage -> database -> LB/VIP -> web -> control node.
+# There is no firewall layer; the only netfilter rule in the lab is the masquerade
+# the router role writes, so reachability is decided by routing alone. See ADR-25.
+
+- name: Check the secrets before touching any node
+  hosts: mgmt
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Check every secret is set
+      ansible.builtin.assert:
+        that:
+          - vault_mysql_repl_password is defined
+          - vault_wordpress_salts is defined
+          - vault_mysql_wp_password != 'CHANGE_ME'
+          - vault_keepalived_auth_pass | length <= 8
+        fail_msg: >-
+          [ERROR] inventory/group_vars/all/vault.yml is missing or still holds placeholders;
+          run bash ../scripts/tools/gen-vault.sh first
+        quiet: true
+
+- name: Apply the baseline to every node
+  hosts: lab
+  tags: [common]
+  roles:
+    - common
+
+- name: Configure the router, NTP and DNS
+  hosts: router
+  tags: [router]
+  roles:
+    - router
+
+- name: Configure the NFS server
+  hosts: nfs
+  tags: [nfs]
+  roles:
+    - nfs_server
+
+- name: Configure MySQL replication and its health check
+  hosts: db
+  tags: [db]
+  roles:
+    - mysql
+    - mysqlchk
+
+- name: Configure the load balancers and the VIP
+  hosts: lb
+  tags: [lb]
+  roles:
+    - haproxy
+    - keepalived
+
+# nfs_client before wordpress: WooCommerce writes uploads on activation, and they must land on NFS
+- name: Configure the web nodes
+  hosts: web
+  tags: [web]
+  roles:
+    - nfs_client
+    - nginx_php
+    - wordpress
+
+- name: Configure the control node
+  hosts: mgmt
+  tags: [mgmt]
+  roles:
+    - mgmt

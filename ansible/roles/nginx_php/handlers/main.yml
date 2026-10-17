@@ -1,0 +1,24 @@
+---
+# Each pair runs in this order: syntax check first, so a broken file never reaches a reload.
+
+- name: Check the Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  listen: Nginx config changed
+
+- name: Reload nginx
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: reloaded
+  listen: Nginx config changed
+
+- name: Check the PHP-FPM configuration
+  ansible.builtin.command: "php-fpm{{ nginx_php_php_version }} -t"
+  changed_when: false
+  listen: PHP-FPM config changed
+
+- name: Reload php-fpm
+  ansible.builtin.systemd_service:
+    name: "{{ nginx_php_fpm_service }}"
+    state: reloaded
+  listen: PHP-FPM config changed

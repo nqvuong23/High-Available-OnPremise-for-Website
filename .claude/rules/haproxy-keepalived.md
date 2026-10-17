@@ -64,7 +64,7 @@ paths:
 ## System requirements
 
 - Set `net.ipv4.ip_nonlocal_bind=1`, because HAProxy on the BACKUP node must bind a VIP it does not own yet.
-- Open IP protocol 112 between the two LBs; `ufw` has no `proto vrrp`, so add the rule to `/etc/ufw/before.rules`.
+- Nothing to open for VRRP: the lab runs no firewall (ADR-25), so protocol 112 reaches both LBs as soon as Keepalived starts. This used to be the classic trap, because `ufw` has no `proto vrrp` and a forgotten `before.rules` entry produced a split brain. Scenario 05 still reproduces it by injecting an `inet lab_chaos` drop, and its rollback removes it, so an LB's ruleset must be empty at rest.
 - VRRP is link-local and stays inside `vmnet1`; it is never routed and must never be expected to cross a zone.
 - If the host-only segment blocks multicast, switch to `unicast_src_ip` and `unicast_peer`.
 

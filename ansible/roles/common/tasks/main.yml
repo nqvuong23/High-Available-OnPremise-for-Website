@@ -1,0 +1,64 @@
+---
+- name: Refresh the apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+
+# The lab runs with no host firewall at all; see ADR-25. ufw is purged rather than left
+# installed-but-inactive, so "is a rule blocking this?" is never a question during a drill.
+- name: Look for ufw
+  ansible.builtin.stat:
+    path: /usr/sbin/ufw
+  register: common_ufw
+
+# disable first: it flushes the rules out of the kernel, which apt purge does not do, so
+# skipping this would leave an upgraded node filtering until its next reboot
+- name: Disable ufw before removing the package
+  community.general.ufw:
+    state: disabled
+  when: common_ufw.stat.exists
+
+- name: Remove ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: absent
+    purge: true
+
+# the nft binary stays for the chaos scenarios, which load their own table and delete it
+# again on rollback; only the router keeps the service running, for masquerade
+- name: Keep nftables off outside the router
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: false
+    state: stopped
+  when: "'router' not in group_names"
+
+# masking by symlink works whether or not chrony already removed the timesyncd package
+- name: Mask systemd-timesyncd so chrony is the only time client
+  ansible.builtin.file:
+    src: /dev/null
+    dest: /etc/systemd/system/systemd-timesyncd.service
+    state: link
+    force: true
+  notify: Reload systemd
+
+- name: Point chrony at the zone gateway
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: "'router' not in group_names"
+  notify: Restart chrony
+
+- name: Enable and start chrony
+  ansible.builtin.systemd_service:
+    name: chrony
+    enabled: true
+    state: started

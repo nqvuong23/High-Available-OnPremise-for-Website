@@ -1,0 +1,92 @@
+---
+# Topology. Values used by more than one role live here and nowhere else.
+
+ansible_host: "{{ lab_ip }}"
+
+lab_domain: lab.internal
+lab_site_fqdn: "shop.{{ lab_domain }}"
+lab_operator_user: vagrant
+
+# .254 is fw01 in every zone, .1 is the Windows host adapter
+lab_zones:
+  dmz:
+    subnet: 192.168.10.0/24
+    gateway: 192.168.10.254
+    host_adapter: 192.168.10.1
+  app:
+    subnet: 192.168.20.0/24
+    gateway: 192.168.20.254
+    host_adapter: 192.168.20.1
+  db:
+    subnet: 192.168.30.0/24
+    gateway: 192.168.30.254
+    host_adapter: 192.168.30.1
+  client:
+    subnet: 172.16.10.0/24
+    gateway: 172.16.10.254
+    host_adapter: 172.16.10.1
+
+lab_nat_subnet: 10.10.10.0/24
+lab_gateway: "{{ lab_zones[lab_zone].gateway }}"
+lab_upstream_dns:
+  - 1.1.1.1
+  - 8.8.8.8
+
+vip_address: 192.168.10.100
+vip_prefix: 24
+
+# Address lists derived from the inventory, so no role repeats an IP.
+lb_ips: "{{ groups['lb'] | map('extract', hostvars, 'lab_ip') | list }}"
+web_ips: "{{ groups['web'] | map('extract', hostvars, 'lab_ip') | list }}"
+db_ips: "{{ groups['db'] | map('extract', hostvars, 'lab_ip') | list }}"
+nfs_ip: "{{ hostvars[groups['nfs'][0]].lab_ip }}"
+mgmt_ip: "{{ hostvars[groups['mgmt'][0]].lab_ip }}"
+mon_ip: "{{ hostvars[groups['mon'][0]].lab_ip }}"
+admin_ips: "{{ [mgmt_ip, mon_ip] }}"
+host_adapter_ips: "{{ lab_zones | dict2items | map(attribute='value.host_adapter') | list }}"
+zone_subnets: "{{ lab_zones | dict2items | map(attribute='value.subnet') | list }}"
+
+# NIC holding lab_ip, read from facts because guest NIC names differ between builds
+lab_iface: >-
+  {{ (ansible_facts.interfaces
+      | map('regex_replace', '[-:.]', '_')
+      | map('extract', ansible_facts)
+      | selectattr('ipv4', 'defined')
+      | selectattr('ipv4.address', 'equalto', lab_ip)
+      | map(attribute='device')
+      | list + ['__not_found__']) | first }}
+
+# NFS with AUTH_SYS compares numeric IDs, so www-data must match on web and nfs nodes
+www_data_uid: 33
+www_data_gid: 33
+
+mysql_port: 3306
+mysqlchk_port: 9200
+haproxy_stats_port: 8404
+
+# Database topology. Change mysql_primary_host only as the last step of runbook RB-02.
+mysql_primary_host: db01
+mysql_wp_database: wordpress
+mysql_wp_user: wp
+mysql_ops_user: ops
+mysql_repl_user: repl
+mysql_chk_user: mysqlchk
+
+php_version: "8.3"
+
+nfs_export_path: /srv/nfs/uploads
+wordpress_root: /var/www/wordpress
+wordpress_uploads_dir: "{{ wordpress_root }}/wp-content/uploads"
+lab_probe_file: lab-probe.txt
+
+haproxy_stats_user: admin
+
+# Secrets come from vault.yml; see ansible/vault.yml.example.
+mysql_repl_password: "{{ vault_mysql_repl_password }}"
+mysql_wp_password: "{{ vault_mysql_wp_password }}"
+mysql_ops_password: "{{ vault_mysql_ops_password }}"
+mysql_chk_password: "{{ vault_mysql_chk_password }}"
+haproxy_stats_password: "{{ vault_haproxy_stats_password }}"
+keepalived_auth_pass: "{{ vault_keepalived_auth_pass }}"
+wordpress_admin_password: "{{ vault_wordpress_admin_password }}"
+wordpress_salts: "{{ vault_wordpress_salts }}"

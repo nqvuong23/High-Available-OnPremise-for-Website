@@ -1,0 +1,4 @@
+# managed by ansible role nfs_server
+# explicit web node addresses, not a subnet: nothing else in the app zone may mount this
+{{ nfs_export_path }}{% for ip in web_ips %} {{ ip }}({{ nfs_server_export_options }}){% endfor %}
+

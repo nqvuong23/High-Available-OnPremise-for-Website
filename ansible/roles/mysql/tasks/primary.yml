@@ -1,0 +1,111 @@
+---
+- name: Create the application and lab databases
+  community.mysql.mysql_db:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    name: "{{ item }}"
+    encoding: utf8mb4
+    collation: utf8mb4_unicode_ci
+    state: present
+  loop:
+    - "{{ mysql_wp_database }}"
+    - lab
+
+- name: Create the replication account
+  community.mysql.mysql_user:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    name: "{{ mysql_repl_user }}"
+    host: "{{ mysql_repl_host_pattern }}"
+    password: "{{ mysql_repl_password }}"
+    priv: "*.*:REPLICATION SLAVE"
+    update_password: on_create
+    state: present
+  no_log: true
+
+# MySQL sees the LB address as the source because traffic arrives through HAProxy
+- name: Create the application account per load balancer
+  community.mysql.mysql_user:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    name: "{{ mysql_wp_user }}"
+    host: "{{ item }}"
+    password: "{{ mysql_wp_password }}"
+    priv: "{{ mysql_wp_database }}.*:ALL"
+    update_password: on_create
+    state: present
+  loop: "{{ lb_ips }}"
+  no_log: true
+
+# exactly what the scenario scripts and runbooks RB-02 to RB-04 use; a global ALL would
+# expand into dynamic privileges on MySQL 8 and never compare equal on the next run
+- name: Create the operator account for the control node
+  community.mysql.mysql_user:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    name: "{{ mysql_ops_user }}"
+    host: "{{ mgmt_ip }}"
+    password: "{{ mysql_ops_password }}"
+    priv: "*.*:PROCESS,RELOAD,REPLICATION CLIENT,REPLICATION SLAVE,SUPER/mysql.*:SELECT/{{ mysql_wp_database }}.*:ALL/lab.*:ALL"
+    update_password: on_create
+    state: present
+  no_log: true
+
+- name: Create the health check account
+  community.mysql.mysql_user:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    name: "{{ mysql_chk_user }}"
+    host: localhost
+    password: "{{ mysql_chk_password }}"
+    priv: "*.*:USAGE"
+    update_password: on_create
+    state: present
+  no_log: true
+
+- name: Look up the lab tables and the heartbeat event
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query:
+      - >-
+        SELECT COUNT(*) AS n FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = 'lab' AND TABLE_NAME = 'heartbeat'
+      - >-
+        SELECT COUNT(*) AS n FROM information_schema.EVENTS
+        WHERE EVENT_SCHEMA = 'lab' AND EVENT_NAME = 'heartbeat_tick'
+      - >-
+        SELECT COUNT(*) AS n FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = '{{ mysql_wp_database }}' AND TABLE_NAME = 'lab_probe'
+  register: mysql_lab_objects
+  changed_when: false
+
+# a row rewritten every second is what makes replication lag measurable
+- name: Create the replication heartbeat table
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query:
+      - CREATE TABLE lab.heartbeat (id TINYINT PRIMARY KEY, ts DATETIME(3) NOT NULL)
+      - INSERT INTO lab.heartbeat VALUES (1, NOW(3))
+  when: mysql_lab_objects.query_result[0][0].n | int == 0
+
+- name: Create the heartbeat event
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query: >-
+      CREATE EVENT lab.heartbeat_tick ON SCHEDULE EVERY 1 SECOND
+      DO UPDATE lab.heartbeat SET ts = NOW(3) WHERE id = 1
+  when: mysql_lab_objects.query_result[1][0].n | int == 0
+
+- name: Create the write probe table used by the audits
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query:
+      - >-
+        CREATE TABLE {{ mysql_wp_database }}.lab_probe
+        (id TINYINT PRIMARY KEY, ts DATETIME(3) NOT NULL, writer VARCHAR(64) NOT NULL)
+      - INSERT INTO {{ mysql_wp_database }}.lab_probe VALUES (1, NOW(3), 'ansible')
+  when: mysql_lab_objects.query_result[2][0].n | int == 0

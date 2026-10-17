@@ -1,0 +1,5 @@
+# managed by ansible role mysqlchk
+# no host line: connect over the unix socket so 'mysqlchk'@'localhost' matches under skip_name_resolve
+[client]
+user = {{ mysql_chk_user }}
+password = {{ mysql_chk_password }}

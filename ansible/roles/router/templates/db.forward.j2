@@ -1,0 +1,27 @@
+; managed by ansible role router
+$TTL 3600
+@       IN  SOA ns1.{{ lab_domain }}. admin.{{ lab_domain }}. (
+            {{ router_dns_serial }} ; serial, YYYYMMDDnn
+            3600        ; refresh
+            600         ; retry
+            604800      ; expire
+            3600 )      ; negative cache TTL
+
+@       IN  NS      ns1.{{ lab_domain }}.
+ns1     IN  A       {{ lab_zones[router_ns_zone].gateway }}
+
+; the router, one record per zone interface
+{% for router in groups['router'] %}
+{{ router }}    IN  A   {{ lab_zones[router_ns_zone].gateway }}
+{%   for name, zone in lab_zones.items() %}
+{{ router }}-{{ name }}    IN  A   {{ zone.gateway }}
+{%   endfor %}
+{% endfor %}
+
+; the only entry point a client should use, never a node address
+{{ lab_site_fqdn.split('.')[0] }}    IN  A   {{ vip_address }}
+vip     IN  A   {{ vip_address }}
+
+{% for host in groups['lab'] if host not in groups['router'] %}
+{{ host }}    IN  A   {{ hostvars[host].lab_ip }}
+{% endfor %}

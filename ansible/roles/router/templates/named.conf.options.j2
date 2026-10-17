@@ -1,0 +1,31 @@
+// managed by ansible role router
+acl lab {
+{% for subnet in zone_subnets %}
+    {{ subnet }};
+{% endfor %}
+    localhost;
+};
+
+options {
+    directory "/var/cache/bind";
+
+    // zone addresses and loopback only, never the NAT NIC
+    listen-on port 53 {
+        127.0.0.1;
+{% for zone in lab_zones.values() %}
+        {{ zone.gateway }};
+{% endfor %}
+    };
+    listen-on-v6 { none; };
+
+    allow-query     { lab; };
+    allow-recursion { lab; };
+    allow-transfer  { none; };
+
+    recursion yes;
+    forwarders { {% for server in router_dns_forwarders %}{{ server }}; {% endfor %}};
+    forward only;
+
+    dnssec-validation auto;
+    version none;
+};

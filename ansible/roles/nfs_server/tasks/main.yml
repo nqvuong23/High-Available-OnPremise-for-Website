@@ -1,0 +1,70 @@
+---
+# pinned before any package can pick a number, see deploy-v1.md section 23
+- name: Pin the www-data group ID
+  ansible.builtin.group:
+    name: www-data
+    gid: "{{ www_data_gid }}"
+    state: present
+
+- name: Pin the www-data user ID
+  ansible.builtin.user:
+    name: www-data
+    uid: "{{ www_data_uid }}"
+    group: www-data
+    create_home: false
+
+- name: Install the NFS server
+  ansible.builtin.apt:
+    name: nfs-kernel-server
+    state: present
+
+- name: Restrict the server to NFSv4.2
+  community.general.ini_file:
+    path: /etc/nfs.conf
+    section: nfsd
+    option: "{{ item.key }}"
+    value: "{{ item.value }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nfs_server_versions | dict2items }}"
+  notify: Restart nfs-server
+
+- name: Mask the NFSv3 helpers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    masked: true
+  loop: "{{ nfs_server_masked_units }}"
+
+- name: Create the uploads export
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "2775"
+
+# a known file lets every audit test the read path end to end through nginx
+- name: Place the probe file in the export
+  ansible.builtin.copy:
+    dest: "{{ nfs_export_path }}/{{ lab_probe_file }}"
+    content: "lab-probe ok\n"
+    owner: www-data
+    group: www-data
+    mode: "0644"
+
+- name: Export uploads to the web nodes only
+  ansible.builtin.template:
+    src: exports.j2
+    dest: /etc/exports
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload exports
+
+- name: Enable and start the NFS server
+  ansible.builtin.systemd_service:
+    name: nfs-server
+    enabled: true
+    state: started

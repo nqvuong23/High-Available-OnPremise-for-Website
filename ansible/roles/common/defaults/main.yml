@@ -1,0 +1,17 @@
+---
+common_packages:
+  - chrony
+  - nftables
+  - curl
+  - tcpdump
+  - lsof
+  - sysstat
+  - conntrack
+  - traceroute
+  - mtr-tiny
+  - bind9-dnsutils
+  - netcat-openbsd
+  - jq
+
+# each node asks the .254 of its own zone, so time sync never crosses the router
+common_chrony_server: "{{ lab_gateway }}"

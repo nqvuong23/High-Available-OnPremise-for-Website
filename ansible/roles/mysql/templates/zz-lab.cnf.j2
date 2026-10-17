@@ -1,0 +1,37 @@
+# managed by ansible role mysql
+[mysqld]
+server_id = {{ mysql_server_id }}
+report_host = {{ inventory_hostname }}
+bind_address = {{ lab_ip }},127.0.0.1
+
+# binlog and GTID
+log_bin = /var/log/mysql/binlog
+binlog_format = ROW
+binlog_expire_logs_seconds = {{ mysql_binlog_expire_seconds }}
+gtid_mode = ON
+enforce_gtid_consistency = ON
+log_replica_updates = ON
+
+# relay log, needed because this node becomes a replica after a failback
+relay_log = /var/log/mysql/relaylog
+relay_log_recovery = ON
+
+# durability, never lowered for performance
+sync_binlog = 1
+innodb_flush_log_at_trx_commit = 1
+
+# fencing: any restart comes back read-only, see ADR-09
+read_only = ON
+super_read_only = ON
+
+skip_name_resolve = ON
+event_scheduler = ON
+innodb_buffer_pool_size = {{ mysql_buffer_pool_size }}
+
+# both semi-sync roles on both nodes, so a role swap needs no plugin install
+plugin_load_add = semisync_source.so
+plugin_load_add = semisync_replica.so
+rpl_semi_sync_source_enabled = ON
+rpl_semi_sync_replica_enabled = ON
+rpl_semi_sync_source_wait_point = AFTER_SYNC
+rpl_semi_sync_source_timeout = {{ mysql_semi_sync_timeout_ms }}

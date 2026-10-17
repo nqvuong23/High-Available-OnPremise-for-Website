@@ -1,0 +1,56 @@
+---
+- name: Write the health check credentials
+  ansible.builtin.template:
+    src: mysqlchk.cnf.j2
+    dest: /etc/mysql/mysqlchk.cnf
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+
+- name: Install the health check responder
+  ansible.builtin.copy:
+    src: mysqlchk
+    dest: /usr/local/bin/mysqlchk
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the per-connection service unit
+  ansible.builtin.copy:
+    src: mysqlchk@.service
+    dest: /etc/systemd/system/mysqlchk@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install the listening socket unit
+  ansible.builtin.template:
+    src: mysqlchk.socket.j2
+    dest: /etc/systemd/system/mysqlchk.socket
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart mysqlchk socket
+
+- name: Apply unit changes before enabling the socket
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the mysqlchk socket
+  ansible.builtin.systemd_service:
+    name: mysqlchk.socket
+    enabled: true
+    state: started
+
+# proves the responder answers cleanly; which code each node returns is checked in verify.yml
+- name: Check mysqlchk answers without a socket error
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mysqlchk_port }}/"
+    status_code:
+      - 200
+      - 503
+  changed_when: false

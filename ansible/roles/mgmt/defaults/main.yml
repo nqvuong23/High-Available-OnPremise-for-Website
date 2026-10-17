@@ -1,0 +1,18 @@
+---
+mgmt_packages:
+  - mysql-client
+  - python3-pymysql
+  - python3-cryptography
+  - sntp
+  - nmap
+  - git
+  - openssl
+
+mgmt_install_k6: true
+
+mgmt_home: "/home/{{ lab_operator_user }}"
+mgmt_ssh_key: "{{ mgmt_home }}/.ssh/ansible-key"
+# credentials the scenario scripts read; never inside the repo
+mgmt_private_dir: "{{ mgmt_home }}/.lab"
+mgmt_env_file: /etc/lab/lab.env
+mgmt_ca_cert: /usr/local/share/ca-certificates/lab-ca.crt

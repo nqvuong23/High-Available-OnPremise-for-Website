@@ -1,0 +1,70 @@
+---
+- name: Install MySQL and the Python driver
+  ansible.builtin.apt:
+    name:
+      - mysql-server
+      - python3-pymysql
+    state: present
+
+- name: Write the lab MySQL configuration
+  ansible.builtin.template:
+    src: zz-lab.cnf.j2
+    dest: /etc/mysql/mysql.conf.d/zz-lab.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mysql
+
+- name: Enable and start MySQL
+  ansible.builtin.systemd_service:
+    name: mysql
+    enabled: true
+    state: started
+
+# GTID and the new binlog path must be live before any account is created
+- name: Apply a changed MySQL configuration now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the MySQL socket
+  ansible.builtin.wait_for:
+    path: "{{ mysql_socket }}"
+    timeout: 60
+
+- name: Read the read-only state of this node
+  community.mysql.mysql_query:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    query: SELECT @@read_only AS ro, @@super_read_only AS sro
+  register: mysql_state
+  changed_when: false
+
+# fencing: a writable peer means a failover already happened, so never open a second writer
+- name: Refuse to open write while a peer is writable
+  ansible.builtin.assert:
+    that: hostvars[item].mysql_state.query_result[0][0].ro | int == 1
+    fail_msg: >-
+      [ERROR] {{ item }} is writable; opening write on {{ inventory_hostname }} would
+      create two primaries. If a failover happened, set mysql_primary_host to the
+      writable node in group_vars/all/main.yml.
+    quiet: true
+  loop: "{{ groups['db'] | difference([inventory_hostname]) }}"
+  when: mysql_is_primary | bool and mysql_open_primary_write | bool
+
+- name: Open write access on the designated primary
+  community.mysql.mysql_variables:
+    login_unix_socket: "{{ mysql_socket }}"
+    login_user: root
+    variable: "{{ item }}"
+    value: "OFF"
+  loop:
+    - super_read_only
+    - read_only
+  when: mysql_is_primary | bool and mysql_open_primary_write | bool
+
+- name: Bootstrap accounts and lab objects on the primary
+  ansible.builtin.include_tasks: primary.yml
+  when: mysql_is_primary | bool
+
+- name: Attach the replica to the primary
+  ansible.builtin.include_tasks: replica.yml
+  when: not (mysql_is_primary | bool)

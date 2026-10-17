@@ -1,0 +1,17 @@
+---
+- name: Restart chrony
+  ansible.builtin.systemd_service:
+    name: chrony
+    state: restarted
+
+- name: Reload named
+  ansible.builtin.systemd_service:
+    name: named
+    state: reloaded
+
+# reload, never restart: nftables.service runs "nft flush ruleset" on stop, which would
+# drop masquerade and cut every zone off the internet until the reload lands
+- name: Reload nftables
+  ansible.builtin.systemd_service:
+    name: nftables
+    state: reloaded

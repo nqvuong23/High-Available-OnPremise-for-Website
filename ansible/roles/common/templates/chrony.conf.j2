@@ -1,0 +1,8 @@
+# managed by ansible role common
+# one source by design: fw01 is the single time reference of the lab
+server {{ common_chrony_server }} iburst
+
+driftfile /var/lib/chrony/chrony.drift
+makestep 1 3
+rtcsync
+logdir /var/log/chrony

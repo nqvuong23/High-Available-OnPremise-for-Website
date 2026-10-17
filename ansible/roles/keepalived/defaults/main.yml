@@ -1,0 +1,11 @@
+---
+keepalived_instance: VI_SHOP
+keepalived_vrid: 51
+# advert_int 1 puts detection near 3 seconds, inside the under-6-second target
+keepalived_advert_int: 1
+keepalived_check_interval: 2
+keepalived_check_fall: 2
+keepalived_check_rise: 2
+# must exceed the priority gap between MASTER and BACKUP, or a failed check moves nothing
+keepalived_check_weight: -20
+keepalived_check_script: /usr/local/bin/chk_haproxy.sh

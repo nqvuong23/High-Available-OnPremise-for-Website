@@ -1,0 +1,27 @@
+---
+nginx_php_php_version: "{{ php_version }}"
+nginx_php_fpm_service: "php{{ nginx_php_php_version }}-fpm"
+nginx_php_fpm_socket: "/run/php/php{{ nginx_php_php_version }}-fpm.sock"
+nginx_php_fpm_dir: "/etc/php/{{ nginx_php_php_version }}/fpm"
+
+nginx_php_packages:
+  - nginx
+  - "php{{ nginx_php_php_version }}-fpm"
+  - "php{{ nginx_php_php_version }}-mysql"
+  - "php{{ nginx_php_php_version }}-gd"
+  - "php{{ nginx_php_php_version }}-mbstring"
+  - "php{{ nginx_php_php_version }}-xml"
+  - "php{{ nginx_php_php_version }}-intl"
+  - "php{{ nginx_php_php_version }}-opcache"
+  - "php{{ nginx_php_php_version }}-zip"
+  - "php{{ nginx_php_php_version }}-curl"
+  - unzip
+
+# a starting point, not a measurement: size it from real worker RSS under k6 in M7
+nginx_php_max_children: 12
+nginx_php_start_servers: 3
+nginx_php_min_spare_servers: 2
+nginx_php_max_spare_servers: 5
+
+nginx_php_upload_max: 32M
+nginx_php_memory_limit: 256M

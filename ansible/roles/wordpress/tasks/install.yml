@@ -1,0 +1,133 @@
+---
+# Everything here runs as www-data: uploads live on NFS with root_squash,
+# so anything WordPress writes as root would fail on the export.
+
+- name: Check whether WordPress is installed
+  ansible.builtin.command:
+    cmd: wp core is-installed
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  register: wordpress_installed
+  changed_when: false
+  failed_when: wordpress_installed.rc not in [0, 1]
+
+# retried because HAProxy may still be marking the primary UP after the DB play
+- name: Install WordPress
+  ansible.builtin.command:
+    argv:
+      - wp
+      - core
+      - install
+      - "--url=https://{{ lab_site_fqdn }}"
+      - "--title={{ wordpress_title }}"
+      - "--admin_user={{ wordpress_admin_user }}"
+      - "--admin_password={{ wordpress_admin_password }}"
+      - "--admin_email={{ wordpress_admin_email }}"
+      - --skip-email
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  register: wordpress_core_install
+  until: wordpress_core_install.rc == 0
+  retries: 6
+  delay: 5
+  changed_when: true
+  no_log: true
+  when: wordpress_installed.rc != 0
+
+- name: Check whether WooCommerce is active
+  ansible.builtin.command:
+    cmd: wp plugin is-active woocommerce
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  register: wordpress_wc_active
+  changed_when: false
+  failed_when: wordpress_wc_active.rc not in [0, 1]
+
+- name: Activate WooCommerce
+  ansible.builtin.command:
+    cmd: wp plugin activate woocommerce
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  changed_when: true
+  when: wordpress_wc_active.rc != 0
+
+- name: Create the WooCommerce pages
+  ansible.builtin.command:
+    cmd: "wp wc tool run install_pages --user={{ wordpress_admin_user }}"
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  changed_when: true
+  when: wordpress_wc_active.rc != 0
+
+- name: Set the WooCommerce store options
+  ansible.builtin.command:
+    argv:
+      - wp
+      - option
+      - update
+      - "{{ item.name }}"
+      - "{{ item.value }}"
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  loop: "{{ wordpress_store_options }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: wordpress_option_update
+  changed_when: "'Updated' in wordpress_option_update.stdout"
+
+# cash on delivery needs no gateway, which keeps the order path testable offline
+- name: Enable cash on delivery
+  ansible.builtin.command:
+    argv:
+      - wp
+      - option
+      - update
+      - woocommerce_cod_settings
+      - --format=json
+      - '{"enabled":"yes","title":"Cash on delivery"}'
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  register: wordpress_cod_update
+  changed_when: "'Updated' in wordpress_cod_update.stdout"
+
+- name: Look up the demo product
+  ansible.builtin.command:
+    argv:
+      - wp
+      - post
+      - list
+      - --post_type=product
+      - "--name={{ wordpress_product_slug }}"
+      - --format=count
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  register: wordpress_product_count
+  changed_when: false
+
+- name: Create the demo product
+  ansible.builtin.command:
+    argv:
+      - wp
+      - wc
+      - product
+      - create
+      - "--name={{ wordpress_product_name }}"
+      - "--slug={{ wordpress_product_slug }}"
+      - --type=simple
+      - "--regular_price={{ wordpress_product_price }}"
+      - --status=publish
+      - "--user={{ wordpress_admin_user }}"
+      - --porcelain
+    chdir: "{{ wordpress_root }}"
+  become_user: www-data
+  environment: "{{ wordpress_cli_env }}"
+  changed_when: true
+  when: wordpress_product_count.stdout | int == 0

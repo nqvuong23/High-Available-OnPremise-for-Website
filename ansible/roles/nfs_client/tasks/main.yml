@@ -1,0 +1,49 @@
+---
+- name: Pin the www-data group ID
+  ansible.builtin.group:
+    name: www-data
+    gid: "{{ www_data_gid }}"
+    state: present
+
+- name: Pin the www-data user ID
+  ansible.builtin.user:
+    name: www-data
+    uid: "{{ www_data_uid }}"
+    group: www-data
+    create_home: false
+
+- name: Install the NFS client
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+
+- name: Check whether uploads is already mounted
+  ansible.builtin.command: findmnt -n {{ wordpress_uploads_dir }}
+  register: nfs_client_findmnt
+  changed_when: false
+  failed_when: false
+
+# root:0555 underneath the mount turns a missing mount into a loud write error
+# instead of silent local writes; touching it while mounted would hit the export
+- name: Create the mount point, unwritable while unmounted
+  ansible.builtin.file:
+    path: "{{ wordpress_uploads_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0555"
+  when: nfs_client_findmnt.rc != 0
+
+- name: Mount the shared uploads export
+  ansible.posix.mount:
+    path: "{{ wordpress_uploads_dir }}"
+    src: "{{ nfs_ip }}:{{ nfs_export_path }}"
+    fstype: nfs4
+    opts: "{{ nfs_client_mount_opts }}"
+    state: mounted
+
+- name: Confirm uploads is served by NFS
+  ansible.builtin.command: findmnt -n -o FSTYPE {{ wordpress_uploads_dir }}
+  register: nfs_client_fstype
+  changed_when: false
+  failed_when: nfs_client_fstype.stdout != 'nfs4'

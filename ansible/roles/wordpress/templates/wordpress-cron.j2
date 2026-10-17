@@ -1,0 +1,2 @@
+# managed by ansible role wordpress: WP-Cron runs on this node only, so nothing runs twice
+*/5 * * * * www-data cd {{ wordpress_root }} && WP_CLI_CACHE_DIR={{ wordpress_cache_dir }}/wp-cli /usr/local/bin/wp cron event run --due-now >/dev/null 2>&1

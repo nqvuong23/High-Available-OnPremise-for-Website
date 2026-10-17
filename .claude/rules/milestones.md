@@ -16,13 +16,14 @@
 
 ## M1 — Lab build, routing and OS baseline
 
-- Deliverable: `Vagrantfile`, role `firewall`, role `common`, the firewall matrix actually applied.
+- Deliverable: `Vagrantfile`, role `common`, role `router` with forwarding and masquerade.
 - Done when: all 10 VMs are up on the right VMnets with the right static IPs, and `fw01` forwards between all 4 zones.
 - Done when: every NIC is matched by MAC address, so a rebuild cannot shift which interface holds which zone address. See ADR-20.
 - Done when: from `mgmt01`, `ansible all -m ping` succeeds over the zone NICs, routed through `fw01`.
 - Done when: `traceroute` from `web01` to `db01` shows exactly one hop at `192.168.20.254`, proving traffic is routed and not bridged.
 - Done when: lab nodes still reach the internet after the NAT NIC is removed, through `fw01` masquerade.
-- Done when: AppArmor is enforcing, chrony is in sync, `ufw` opens only the ports in the matrix.
+- Done when: AppArmor is enforcing and chrony is in sync.
+- Done when: no firewall is loaded anywhere. `nft list ruleset` is empty on the 9 non-router nodes, shows only `ip router_nat` on `fw01`, and `ufw` is not installed on any node. See ADR-25.
 - Done when: the whole lab can be destroyed and rebuilt by command alone, no manual step, timed.
 - Snapshot when done: `base`.
 
@@ -96,6 +97,7 @@
 
 ## Out of scope, must be stated in the README
 
+- No firewall on any node and no zone policy on the router; see ADR-25. The 4 zones stay routed and separate, but nothing enforces which pairs may talk, so the app zone can reach the db zone directly and only the MySQL GRANT host pattern stops it. Every "denied on purpose" flow is design intent, not enforcement, and each service's own access control is single-layer with nothing behind it. The future fix is to put the `nftables` zone policy back; this is the largest honesty item in the project and must be stated first, not buried.
 - A single NFS server is a known SPOF; the future fix is GlusterFS, DRBD with Pacemaker, or object storage.
 - `fw01` is a single router and therefore a SPOF for every cross-zone flow, including web to DB; the future fix is a second router with VRRP, or collapsing the zones.
 - No automatic DB failover; the future fix is Orchestrator or ProxySQL with fencing.

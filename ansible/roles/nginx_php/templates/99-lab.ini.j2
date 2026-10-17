@@ -1,0 +1,8 @@
+; managed by ansible role nginx_php
+memory_limit = {{ nginx_php_memory_limit }}
+upload_max_filesize = {{ nginx_php_upload_max }}
+post_max_size = {{ nginx_php_upload_max }}
+max_execution_time = 60
+opcache.enable = 1
+opcache.memory_consumption = 128
+expose_php = Off

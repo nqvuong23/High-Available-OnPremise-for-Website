@@ -14,8 +14,9 @@ Three services, two nodes:
 | Internal DNS | `fw01` | `bind9` | UDP 53, TCP 53 |
 | NFS server | `nfs01` | `nfs-kernel-server` | TCP 2049 |
 
-Out of scope here: the `router` role itself, forwarding, masquerade and the `nftables`
-zone policy. Those come from M1 and must already work.
+Out of scope here: the `router` role itself, forwarding and masquerade. Those come from
+M1 and must already work. There is no firewall layer anywhere in the lab, so the "Port"
+column above says what each service listens on, not what a rule permits. See ADR-25.
 
 ### Conflicts this document resolves
 
@@ -179,31 +180,34 @@ real equivalent: `allow` is an ACL applied *after* the packet arrives, not a soc
 restriction, and `bindaddress` accepts only one IPv4 address while `fw01` has four
 zone addresses to serve. So chronyd binds `0.0.0.0:123` and the NAT NIC is included.
 
-The consequence: **for NTP, `ufw` is the only thing standing between the NAT segment
-and an open NTP server.** bind9 has two independent layers, chrony has one. Treat the
-step 8 rules as load-bearing rather than belt-and-braces, and verify them with the
-test in step 10 rather than assuming them.
+The consequence: **chronyd's `allow` list is the only thing limiting who gets an
+answer on UDP 123.** bind9 has two independent layers, chrony has one, and since
+ADR-25 removed the firewall there is no third. Keep the `allow` directives written per
+zone subnet and verify them with the test in step 10 rather than assuming them.
 
 The only socket-level control chrony offers is `port 0`, which disables the server
 entirely. That is correct for the 8 clients and wrong for `fw01`.
 
-## 8. Open the firewall on fw01
+## 8. Accept that UDP 123 is reachable from the NAT segment
 
-NTP is addressed to the router itself, not forwarded through it, so this is a `ufw`
-rule and not an `nftables` forward rule. `fw01` runs both tools, and
-`network-firewall.md` keeps `ufw` scoped to traffic terminating on the router.
+There is nothing to open: the lab runs no firewall, so the port is already reachable
+from every segment `fw01` has a NIC on, the `10.10.10.0/24` NAT segment included. See
+ADR-25 for the decision and what it buys.
+
+What still limits the blast radius is the ACL inside `chrony.conf`:
 
 ```bash
-ufw allow from 192.168.10.0/24 to any port 123 proto udp comment 'ntp dmz'
-ufw allow from 192.168.20.0/24 to any port 123 proto udp comment 'ntp app'
-ufw allow from 192.168.30.0/24 to any port 123 proto udp comment 'ntp db'
-ufw allow from 172.16.10.0/24 to any port 123 proto udp comment 'ntp client'
-ufw reload
+grep -E '^(allow|deny)' /etc/chrony/conf.d/server.conf
 ```
 
-Never open 123 on the NAT NIC. Writing each rule against a specific zone subnet
-already prevents that, because `10.10.10.0/24` is not in the list. An open NTP server
-facing NAT is a reflection and amplification source.
+Only the four zone subnets are listed, so a request arriving from `10.10.10.0/24`
+reaches chronyd and is refused by the ACL instead of being dropped at the NIC. The
+difference matters: `ss -ulnp | grep :123` shows the socket bound on `0.0.0.0`, and a
+scan from the NAT segment sees an open port rather than a filtered one.
+
+Record this as a known limitation. A lab on a private host-only NAT is not an
+amplification risk worth a firewall, but the reasoning has to be written down rather
+than skipped, because on a real deployment this is exactly the port that gets abused.
 
 ## 9. Point the lab nodes at fw01
 
@@ -278,15 +282,16 @@ Measured on first build — fill in from the commands above:
 
 Expect `makestep 1 3` to correct a large initial offset in one jump on the first
 three updates, then slew only. A node that still shows a large offset after a few
-minutes has a blocked UDP 123 path, not a chrony problem. Check with
-`chronyc sources -v` showing `?` for the source, then the `ufw` rules on `fw01`.
+minutes has a broken UDP 123 path, not a chrony problem. Check with
+`chronyc sources -v` showing `?` for the source, then the routing on `fw01`. There is
+no firewall to blame, which removes one hypothesis for free.
 
-### Prove the NTP server is closed on the NAT segment
+### Prove the NTP server refuses the NAT segment
 
-This is the test that matters most, because step 7 explained that `ufw` is the only
-layer protecting UDP 123. Run it from `mgmt01`, which is the right place: it keeps its
-NAT NIC permanently, so it is genuinely on `10.10.10.0/24` and its packets arrive with
-a NAT-segment source address that no `allow` rule covers.
+This is the test that matters most, because step 7 explained that chronyd's `allow`
+list is the only layer limiting UDP 123. Run it from `mgmt01`, which is the right
+place: it keeps its NAT NIC permanently, so it is genuinely on `10.10.10.0/24` and its
+packets arrive with a NAT-segment source address that no `allow` rule covers.
 
 Find the `fw01` NAT address, then query it from the NAT side:
 
@@ -298,11 +303,13 @@ ip -4 -brief address show | awk '/10\.10\.10\./ {print $3}'
 chronyc -h <fw01-nat-ip> tracking
 ```
 
-It must fail with `506 Cannot talk to daemon` or time out. An answer means `ufw` is
-not covering the NAT segment and the lab is running a reflectable NTP server.
+It must fail with `506 Cannot talk to daemon` or time out. The failure is a refusal by
+the ACL, not a dropped packet, so expect the refusal to be fast rather than a timeout.
+An answer means the `allow` list covers the NAT segment and the lab is running a
+reflectable NTP server.
 
 Repeat the same query against the zone address to confirm the allowed path still
-works, which proves the first result was the firewall and not a dead service:
+works, which proves the first result was the ACL and not a dead service:
 
 ```bash
 chronyc -h 172.16.10.254 tracking      # expect a normal tracking report
@@ -671,23 +678,25 @@ now gated on a service it does not strictly require, so a broken named delays ti
 sync instead of leaving it degraded. Either choice is defensible; record which one you
 picked, because it changes what a boot-time postmortem should expect to see.
 
-## 19. Open the firewall on fw01
+## 19. Confirm port 53 needs nothing opened
+
+Again there is no firewall, so both UDP and TCP 53 are reachable the moment named
+binds them. See ADR-25. What keeps the resolver off the NAT segment is `listen-on`,
+which is a socket restriction and therefore stronger than chrony's ACL:
 
 ```bash
-for net in 192.168.10.0/24 192.168.20.0/24 192.168.30.0/24 172.16.10.0/24; do
-    ufw allow from "$net" to any port 53 proto udp comment 'dns'
-    ufw allow from "$net" to any port 53 proto tcp comment 'dns tcp'
-done
-ufw reload
-ufw status verbose
+ss -ulnp | grep ':53'
+ss -tlnp | grep ':53'
 ```
 
-TCP 53 is needed as well as UDP 53. A response larger than the UDP payload limit sets
-the truncated bit and the client retries over TCP. Opening only UDP produces
-intermittent failures on large answers, which is a confusing symptom to debug.
+Only the four zone addresses and loopback may appear. If a NAT address is in that
+list, fix `listen-on` in `named.conf.options`; there is no firewall layer to hide the
+mistake behind.
 
-As with NTP, `10.10.10.0/24` is deliberately absent, so nothing on the NAT side can
-query this resolver.
+TCP 53 matters as much as UDP 53. A response larger than the UDP payload limit sets
+the truncated bit and the client retries over TCP, so a resolver listening only on UDP
+produces intermittent failures on large answers, which is a confusing symptom to
+debug. Check both lines above, not just the first.
 
 ## 20. Point the lab nodes at fw01
 
@@ -993,18 +1002,23 @@ The `exportfs -v` output must list both web node addresses with the options abov
 Note it also shows `root_squash` even though `/etc/exports` does not, which confirms
 the default is active.
 
-## 28. Open the firewall on nfs01
+## 28. Rely on the export list, not on a firewall rule
+
+TCP 2049 is reachable from anywhere that can route to `nfs01`, because the lab runs no
+firewall (ADR-25). The access control is `/etc/exports` alone, which is why step 27
+lists the two web node addresses explicitly and nothing else.
+
+`mgmt01` is intentionally **not** in the export list. NFS is not an administrative
+interface. Prove the restriction is real from the client zone:
 
 ```bash
-ufw allow from 192.168.20.11 to any port 2049 proto tcp comment 'nfs web01'
-ufw allow from 192.168.20.12 to any port 2049 proto tcp comment 'nfs web02'
-ufw reload
-ufw status verbose
+# on mgmt01, expect "access denied by server"
+sudo mount -t nfs4 192.168.20.21:/ /mnt
 ```
 
-`mgmt01` is intentionally **not** allowed. NFS is not an administrative interface, and
-`network-firewall.md` lists `client zone -> nfs01:2049` as a flow that must be denied
-and tested.
+The port answers and the mount is refused, which is a weaker result than a dropped
+packet: a client-zone host can still reach the RPC service and enumerate it. Record
+that in the known limitations rather than claiming the flow is blocked.
 
 ## 29. Mount from the web nodes
 
@@ -1130,8 +1144,8 @@ experiment must be coded or rolled back immediately.
 | Role | Tasks to add |
 |---|---|
 | `common` | install chrony, mask `systemd-timesyncd`, template `chrony.conf` with the zone `.254` from a variable, set the resolver on the zone NIC, drop `FallbackDNS=` into `resolved.conf.d/`, set `use-dns: false` on the NAT NIC while it exists |
-| `router` | chrony `conf.d/server.conf`, bind9 packages, `named.conf.options`, `named.conf.local`, all five zone files, `ufw` rules for 53 and 123, static `/etc/resolv.conf` |
-| `nfs_server` | pin `www-data` 33:33 before packages, install `nfs-kernel-server`, `/etc/nfs.conf`, mask the v3 helpers, create and own the export, `/etc/exports`, `ufw` rule for 2049 |
+| `router` | chrony `conf.d/server.conf`, bind9 packages, `named.conf.options`, `named.conf.local`, all five zone files, static `/etc/resolv.conf` |
+| `nfs_server` | pin `www-data` 33:33 before packages, install `nfs-kernel-server`, `/etc/nfs.conf`, mask the v3 helpers, create and own the export, `/etc/exports` |
 | `nfs_client` | pin `www-data` 33:33, install `nfs-common`, create the mount point, `fstab` entry, mount |
 
 Guard both new `fw01` services behind variables so they stay visibly optional:
@@ -1154,6 +1168,16 @@ requirement in G8:
 
 These belong in the README's out-of-scope list.
 
+- No host firewall and no zone policy anywhere; see ADR-25. Every listening port is
+  reachable from every zone that can route to it, so there is no network layer that
+  stops the app zone talking straight to `192.168.30.11:3306`, and the zone split is a
+  routing and design boundary rather than an enforced one. What remains is each
+  service's own access control: `listen-on` for bind9, `allow` for chrony,
+  `/etc/exports` for NFS, GRANT host patterns for MySQL, `allow`/`deny` for Nginx. Each
+  is single-layer, so a mistake in one has nothing behind it.
+- UDP 123 on `fw01` is reachable from the `10.10.10.0/24` NAT segment, because chrony
+  binds `0.0.0.0` and its `allow` list refuses rather than drops. Acceptable on a
+  private host-only NAT, unacceptable on anything routable.
 - `fw01` now owns routing, time and name resolution. It was already a SPOF for
   every cross-zone flow, so this adds no new failure mode, but it does widen the blast
   radius of a `fw01` outage. The future fix is the same one already listed for

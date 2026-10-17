@@ -60,13 +60,14 @@ paths:
 - Do **not** grant the application user on `192.168.20.%`. Web nodes never connect directly; if that grant makes things work, the traffic is bypassing the LB and the design is broken.
 - The replication user is granted between the two db-zone addresses, since replication stays inside the db zone.
 - The `mysqlchk` user only needs to read status variables and should be limited to `localhost`.
+- Since ADR-25 these host patterns are the only thing keeping the db zone to itself, so a grant widened to `192.168.20.%` silently lets web nodes bypass the LB. Treat every GRANT host as a security boundary, not a convenience.
 
 ## mysqlchk
 
 - Listens on port 9200, returns HTTP 200 when the node is writable and 503 when it is read-only.
 - Condition for a 200: both `@@read_only` and `@@super_read_only` are 0.
 - Implement it with a systemd socket unit to keep it light; no web server needed.
-- Port 9200 must be open to the two LB addresses only, and never on the NAT NIC.
+- The socket unit binds the zone address and loopback, never the NAT NIC. With no firewall (ADR-25) that bind is the only restriction, so the responder is reachable from any zone that can route to it.
 
 ## Acceptance
 
@@ -75,7 +76,7 @@ paths:
 - `SHOW REPLICA STATUS` shows `Replica_IO_Running` and `Replica_SQL_Running` both `Yes`.
 - Reboot each DB node; both must come back read-only.
 - `curl localhost:9200` returns 200 on the primary and 503 on the replica.
-- From a web node, `mysql -h 192.168.10.100` connects, while `mysql -h 192.168.30.11` is blocked by the firewall.
+- From a web node, `mysql -h 192.168.10.100` connects. `mysql -h 192.168.30.11` **also connects at the TCP level**, because the lab runs no firewall (ADR-25), and must fail with error 1045 on the user instead. Record it that way; "blocked" would be false.
 
 ## Failover drills
 

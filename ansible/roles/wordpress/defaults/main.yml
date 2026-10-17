@@ -1,0 +1,40 @@
+---
+# pinned, never "latest", so both nodes always get the same bytes
+wordpress_version: "7.0"
+wordpress_woocommerce_version: "11.1.0"
+wordpress_wpcli_version: "2.12.0"
+
+wordpress_tarball_url: "https://wordpress.org/wordpress-{{ wordpress_version }}.tar.gz"
+wordpress_woocommerce_url: "https://downloads.wordpress.org/plugin/woocommerce.{{ wordpress_woocommerce_version }}.zip"
+wordpress_wpcli_url: >-
+  https://github.com/wp-cli/wp-cli/releases/download/v{{ wordpress_wpcli_version }}/wp-cli-{{ wordpress_wpcli_version }}.phar
+# wordpress.org publishes a checksum for core; set the other two to "sha256:<hash>" to pin them too
+wordpress_woocommerce_checksum: ""
+wordpress_wpcli_checksum: ""
+
+# downloads stay out of /tmp: fs.protected_regular can block root there
+wordpress_cache_dir: /var/cache/lab
+wordpress_cli_env:
+  WP_CLI_CACHE_DIR: "{{ wordpress_cache_dir }}/wp-cli"
+
+# wp core install and the cron job run on this node only
+wordpress_install_host: "{{ groups['web'][0] }}"
+
+wordpress_title: Lab Shop
+wordpress_admin_user: admin
+wordpress_admin_email: "admin@{{ lab_domain }}"
+
+wordpress_store_options:
+  - name: woocommerce_default_country
+    value: "VN:SG"
+  - name: woocommerce_currency
+    value: VND
+  - name: woocommerce_calc_taxes
+    value: "no"
+  # new stores start in coming-soon mode, which hides the shop from guests
+  - name: woocommerce_coming_soon
+    value: "no"
+
+wordpress_product_name: Lab Widget
+wordpress_product_slug: lab-widget
+wordpress_product_price: "100000"

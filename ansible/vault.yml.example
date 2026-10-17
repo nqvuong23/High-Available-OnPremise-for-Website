@@ -1,0 +1,22 @@
+---
+# Template for inventory/group_vars/all/vault.yml.
+# Generate a real one with: bash ../scripts/tools/gen-vault.sh
+# It is written encrypted; edit it later with: ansible-vault edit inventory/group_vars/all/vault.yml
+
+vault_mysql_repl_password: CHANGE_ME
+vault_mysql_wp_password: CHANGE_ME
+vault_mysql_ops_password: CHANGE_ME
+vault_mysql_chk_password: CHANGE_ME
+vault_haproxy_stats_password: CHANGE_ME
+# VRRP authentication carries at most 8 characters
+vault_keepalived_auth_pass: CHANGE_ME
+vault_wordpress_admin_password: CHANGE_ME
+vault_wordpress_salts:
+  auth_key: CHANGE_ME
+  secure_auth_key: CHANGE_ME
+  logged_in_key: CHANGE_ME
+  nonce_key: CHANGE_ME
+  auth_salt: CHANGE_ME
+  secure_auth_salt: CHANGE_ME
+  logged_in_salt: CHANGE_ME
+  nonce_salt: CHANGE_ME

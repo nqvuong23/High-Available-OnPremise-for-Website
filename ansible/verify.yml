@@ -1,0 +1,275 @@
+---
+# Acceptance tests of deploy-v2.md as code. Changes nothing; run after site.yml.
+# Every check is recorded, then the last play prints them all and fails if any failed.
+
+- name: Collect checks on the router
+  hosts: router
+  gather_facts: false
+  tasks:
+    - name: Read IP forwarding
+      ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+      register: verify_forward
+      changed_when: false
+
+    - name: Resolve the site name through bind9
+      ansible.builtin.command: "dig +short +time=2 +tries=1 @127.0.0.1 {{ lab_site_fqdn }}"
+      register: verify_dns
+      changed_when: false
+      failed_when: false
+
+    - name: Read the loaded nftables ruleset
+      ansible.builtin.command: nft list ruleset
+      register: verify_nft
+      changed_when: false
+
+    - name: Record the router checks
+      ansible.builtin.set_fact:
+        verify_results:
+          - name: ip forwarding on
+            ok: "{{ verify_forward.stdout == '1' }}"
+            detail: "ip_forward={{ verify_forward.stdout }}"
+          - name: masquerade loaded
+            ok: "{{ 'masquerade' in verify_nft.stdout }}"
+            detail: "{{ 'present' if 'masquerade' in verify_nft.stdout else 'missing, zones have no internet' }}"
+          - name: no packet filter loaded
+            ok: "{{ 'hook forward' not in verify_nft.stdout and 'drop' not in verify_nft.stdout }}"
+            detail: "{{ 'nat only' if 'hook forward' not in verify_nft.stdout else 'a filter chain is loaded' }}"
+          - name: site resolves to the VIP
+            ok: "{{ verify_dns.stdout == vip_address }}"
+            detail: "{{ lab_site_fqdn }} -> {{ verify_dns.stdout | default('none', true) }}"
+
+- name: Collect checks on the NFS server
+  hosts: nfs
+  gather_facts: false
+  tasks:
+    - name: Read the NFS versions the kernel serves
+      ansible.builtin.command: cat /proc/fs/nfsd/versions
+      register: verify_nfs_versions
+      changed_when: false
+
+    - name: Read the live exports
+      ansible.builtin.command: exportfs -v
+      register: verify_exports
+      changed_when: false
+
+    - name: Record the NFS server checks
+      ansible.builtin.set_fact:
+        verify_results:
+          - name: NFSv4.2 only
+            ok: "{{ '-3' in verify_nfs_versions.stdout and '+4.2' in verify_nfs_versions.stdout }}"
+            detail: "{{ verify_nfs_versions.stdout }}"
+          - name: exported to every web node
+            ok: "{{ web_ips | reject('in', verify_exports.stdout) | list | length == 0 }}"
+            detail: "{{ verify_exports.stdout_lines | join(' ') }}"
+
+- name: Collect checks on the database nodes
+  hosts: db
+  gather_facts: false
+  vars:
+    verify_primary: "{{ inventory_hostname == mysql_primary_host }}"
+  tasks:
+    - name: Read read-only state and semi-sync status
+      community.mysql.mysql_query:
+        login_unix_socket: /run/mysqld/mysqld.sock
+        login_user: root
+        query:
+          - SELECT @@read_only AS ro
+          - SHOW GLOBAL STATUS LIKE 'Rpl_semi_sync_source_status'
+          - SHOW GLOBAL STATUS LIKE 'Rpl_semi_sync_source_clients'
+          - SHOW REPLICA STATUS
+      register: verify_db
+      changed_when: false
+
+    - name: Call mysqlchk
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ mysqlchk_port }}/"
+        status_code: [200, 503]
+      register: verify_chk
+
+    - name: Record the database checks
+      ansible.builtin.set_fact:
+        verify_replica: "{{ verify_db.query_result[3][0] | default({}) }}"
+        verify_results:
+          - name: "{{ 'primary writable' if verify_primary else 'replica read-only' }}"
+            ok: "{{ (verify_db.query_result[0][0].ro | int) == (0 if verify_primary else 1) }}"
+            detail: "read_only={{ verify_db.query_result[0][0].ro }}"
+          - name: mysqlchk answer
+            ok: "{{ verify_chk.status == (200 if verify_primary else 503) }}"
+            detail: "http {{ verify_chk.status }}"
+
+    - name: Record the semi-sync checks on the primary
+      ansible.builtin.set_fact:
+        verify_results: >-
+          {{ verify_results + [
+               {'name': 'semi-sync on',
+                'ok': verify_db.query_result[1][0].Value == 'ON',
+                'detail': 'status=' ~ verify_db.query_result[1][0].Value},
+               {'name': 'semi-sync replica attached',
+                'ok': verify_db.query_result[2][0].Value | int >= 1,
+                'detail': 'clients=' ~ verify_db.query_result[2][0].Value}] }}
+      when: verify_primary
+
+    - name: Record the replication checks on the replica
+      ansible.builtin.set_fact:
+        verify_results: >-
+          {{ verify_results + [
+               {'name': 'replication threads running',
+                'ok': verify_replica.Replica_IO_Running | default('') == 'Yes'
+                      and verify_replica.Replica_SQL_Running | default('') == 'Yes',
+                'detail': 'io=' ~ verify_replica.Replica_IO_Running | default('none')
+                          ~ ' sql=' ~ verify_replica.Replica_SQL_Running | default('none')}] }}
+      when: not verify_primary
+
+- name: Collect checks on the load balancers
+  hosts: lb
+  gather_facts: false
+  tasks:
+    - name: Check whether this node holds the VIP
+      ansible.builtin.shell: set -o pipefail && ip -4 -o addr show | grep -c ' {{ vip_address }}/' || true
+      args:
+        executable: /bin/bash
+      register: verify_vip
+      changed_when: false
+
+    - name: Read the backend states from the stats socket
+      ansible.builtin.shell: set -o pipefail && echo 'show stat' | socat stdio /run/haproxy/admin.sock | cut -d, -f1,2,18
+      args:
+        executable: /bin/bash
+      register: verify_stat
+      changed_when: false
+
+    - name: Record the load balancer checks
+      ansible.builtin.set_fact:
+        verify_results:
+          - name: "VIP {{ 'held' if keepalived_state == 'MASTER' else 'not held' }}"
+            ok: "{{ (verify_vip.stdout | int) == (1 if keepalived_state == 'MASTER' else 0) }}"
+            detail: "count={{ verify_vip.stdout }}"
+          - name: every web node UP
+            ok: "{{ groups['web'] | map('regex_replace', '^(.*)$', 'be_web,\\1,UP') | reject('in', verify_stat.stdout) | list | length == 0 }}"
+            detail: "{{ verify_stat.stdout_lines | select('match', 'be_web,(?!BACKEND)') | join(' ') }}"
+          - name: primary UP in the mysql listener
+            ok: "{{ ('mysql,' ~ mysql_primary_host ~ ',UP') in verify_stat.stdout }}"
+            detail: "{{ verify_stat.stdout_lines | select('match', 'mysql,(?!FRONTEND|BACKEND)') | join(' ') }}"
+
+- name: Collect checks on the web nodes
+  hosts: web
+  gather_facts: false
+  tasks:
+    - name: Read the uploads filesystem type
+      ansible.builtin.command: "findmnt -n -o FSTYPE {{ wordpress_uploads_dir }}"
+      register: verify_mount
+      changed_when: false
+      failed_when: false
+
+    - name: Fetch the NFS probe file through nginx
+      ansible.builtin.uri:
+        url: "http://127.0.0.1/wp-content/uploads/{{ lab_probe_file }}"
+        return_content: true
+        status_code: [200, 403, 404, 500, 502, 504]
+        timeout: 5
+      register: verify_probe
+
+    - name: Hash the code tree, uploads excluded
+      ansible.builtin.shell: >-
+        set -o pipefail &&
+        cd {{ wordpress_root }} &&
+        find . -path ./wp-content/uploads -prune -o -type f -print0
+        | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16
+      args:
+        executable: /bin/bash
+      register: verify_hash
+      changed_when: false
+
+    # nothing filters any more, so the db zone is reachable; what still has to hold is
+    # that it is reached through the router and not over a shortcut NIC. See ADR-25.
+    - name: Read the route to the database zone
+      ansible.builtin.command: "ip route get {{ hostvars[mysql_primary_host].lab_ip }}"
+      register: verify_db_route
+      changed_when: false
+
+    - name: Record the web checks
+      ansible.builtin.set_fact:
+        verify_code_hash: "{{ verify_hash.stdout }}"
+        verify_results:
+          - name: uploads mounted over NFS
+            ok: "{{ verify_mount.stdout == 'nfs4' }}"
+            detail: "fstype={{ verify_mount.stdout | default('none', true) }}"
+          - name: NFS file served by nginx
+            ok: "{{ verify_probe.status == 200 }}"
+            detail: "http {{ verify_probe.status }}"
+          - name: db zone routed through the gateway
+            ok: "{{ ('via ' ~ lab_gateway) in verify_db_route.stdout }}"
+            detail: "{{ verify_db_route.stdout_lines | first | default('none', true) }}"
+
+- name: Collect checks from the client side
+  hosts: mgmt
+  gather_facts: false
+  tasks:
+    - name: Request the site over HTTP
+      ansible.builtin.uri:
+        url: "http://{{ lab_site_fqdn }}/"
+        follow_redirects: none
+        status_code: [301, 302, 200, 503, -1]
+        timeout: 5
+      register: verify_http
+
+    - name: Request the site over HTTPS, validating the lab CA
+      ansible.builtin.uri:
+        url: "https://{{ lab_site_fqdn }}/"
+        ca_path: /usr/local/share/ca-certificates/lab-ca.crt
+        status_code: [200, 301, 302, 500, 503, -1]
+        timeout: 10
+      register: verify_https
+
+    - name: Ask MySQL through the VIP which node answers
+      ansible.builtin.command: >-
+        mysql --defaults-extra-file=/home/{{ lab_operator_user }}/.lab/wp.cnf
+        -N -B -e "SELECT CONCAT(@@hostname, ',', @@read_only)"
+      register: verify_vip_db
+      changed_when: false
+      failed_when: false
+
+    - name: Record the client checks
+      ansible.builtin.set_fact:
+        verify_results:
+          - name: HTTP redirects to HTTPS
+            ok: "{{ verify_http.status == 301 }}"
+            detail: "http {{ verify_http.status }}"
+          - name: HTTPS valid and serving
+            ok: "{{ verify_https.status == 200 }}"
+            detail: "https {{ verify_https.status }} {{ verify_https.msg | default('') | truncate(60) }}"
+          - name: VIP 3306 reaches the writable primary
+            ok: "{{ verify_vip_db.stdout == mysql_primary_host ~ ',0' }}"
+            detail: "{{ verify_vip_db.stdout | default(verify_vip_db.stderr, true) }}"
+          - name: code identical on every web node
+            ok: "{{ groups['web'] | map('extract', hostvars, 'verify_code_hash') | unique | list | length == 1 }}"
+            detail: "{{ groups['web'] | map('extract', hostvars, 'verify_code_hash') | join(' ') }}"
+
+- name: Report the acceptance result
+  hosts: mgmt
+  gather_facts: false
+  tasks:
+    - name: Print every check
+      ansible.builtin.debug:
+        msg: "{{ verify_lines | trim | split('\n') }}"
+      vars:
+        verify_lines: |
+          {% for check in hostvars[item].verify_results %}
+          {{ '[OK]  ' if check.ok | bool else '[FAIL]' }} {{ item }}: {{ check.name }} ({{ check.detail }})
+          {% endfor %}
+      loop: "{{ groups['lab'] }}"
+      when: hostvars[item].verify_results is defined
+
+    - name: Fail if any check failed
+      ansible.builtin.assert:
+        that: verify_failed | length == 0
+        fail_msg: "[ERROR] failed checks: {{ verify_failed | join(', ') }}"
+        success_msg: "[OK] every acceptance check passed"
+      vars:
+        verify_failed: >-
+          {{ groups['lab']
+             | map('extract', hostvars)
+             | selectattr('verify_results', 'defined')
+             | map(attribute='verify_results') | flatten
+             | rejectattr('ok')
+             | map(attribute='name') | list }}

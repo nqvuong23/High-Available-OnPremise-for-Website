@@ -1,0 +1,15 @@
+---
+nfs_server_export_options: rw,sync,no_subtree_check
+
+# NFSv4.2 only: one TCP port, no rpcbind, no callback port
+nfs_server_versions:
+  vers3: "n"
+  vers4: "y"
+  vers4.0: "n"
+  vers4.1: "n"
+  vers4.2: "y"
+
+nfs_server_masked_units:
+  - rpcbind.socket
+  - rpcbind.service
+  - rpc-statd.service

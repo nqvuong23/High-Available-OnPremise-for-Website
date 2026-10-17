@@ -1,0 +1,14 @@
+// managed by ansible role router
+zone "{{ lab_domain }}" {
+    type master;
+    file "{{ router_zones_dir }}/db.{{ lab_domain }}";
+};
+{% for name, zone in lab_zones.items() %}
+{%   set prefix = zone.subnet.split('/')[0].rsplit('.', 1)[0] %}
+
+// reverse zone for {{ name }}
+zone "{{ prefix.split('.') | reverse | join('.') }}.in-addr.arpa" {
+    type master;
+    file "{{ router_zones_dir }}/db.{{ prefix }}";
+};
+{% endfor %}

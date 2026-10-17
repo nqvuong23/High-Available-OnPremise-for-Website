@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+# managed by ansible role router: masquerade only, no packet filtering. See ADR-25.
+
+table ip router_nat
+delete table ip router_nat
+
+define NAT_IF = "{{ router_nat_iface }}"
+
+# NAT, not a firewall: every chain is policy accept and nothing is ever dropped
+table ip router_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname $NAT_IF masquerade
+    }
+}

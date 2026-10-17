@@ -1,0 +1,42 @@
+<?php
+// managed by ansible role wordpress; identical on every web node
+define('DB_NAME',     '{{ mysql_wp_database }}');
+define('DB_USER',     '{{ mysql_wp_user }}');
+define('DB_PASSWORD', '{{ mysql_wp_password }}');
+// through HAProxy in the dmz zone, never a db node address
+define('DB_HOST',     '{{ vip_address }}:{{ mysql_port }}');
+define('DB_CHARSET',  'utf8mb4');
+define('DB_COLLATE',  '');
+
+define('AUTH_KEY',         '{{ wordpress_salts.auth_key }}');
+define('SECURE_AUTH_KEY',  '{{ wordpress_salts.secure_auth_key }}');
+define('LOGGED_IN_KEY',    '{{ wordpress_salts.logged_in_key }}');
+define('NONCE_KEY',        '{{ wordpress_salts.nonce_key }}');
+define('AUTH_SALT',        '{{ wordpress_salts.auth_salt }}');
+define('SECURE_AUTH_SALT', '{{ wordpress_salts.secure_auth_salt }}');
+define('LOGGED_IN_SALT',   '{{ wordpress_salts.logged_in_salt }}');
+define('NONCE_SALT',       '{{ wordpress_salts.nonce_salt }}');
+
+define('WP_HOME',    'https://{{ lab_site_fqdn }}');
+define('WP_SITEURL', 'https://{{ lab_site_fqdn }}');
+
+// no plugin installs through the admin UI, or the two nodes drift
+define('DISALLOW_FILE_MODS', true);
+
+// WP-Cron runs from a system cron on one node only
+define('DISABLE_WP_CRON', true);
+
+define('FS_METHOD', 'direct');
+
+// TLS ends at HAProxy; without this WordPress loops on redirects
+if (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
+    && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+    $_SERVER['HTTPS'] = 'on';
+}
+
+$table_prefix = 'wp_';
+
+if (!defined('ABSPATH')) {
+    define('ABSPATH', __DIR__ . '/');
+}
+require_once ABSPATH . 'wp-settings.php';

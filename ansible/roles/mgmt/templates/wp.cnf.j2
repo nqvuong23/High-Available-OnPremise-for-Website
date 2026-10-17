@@ -1,0 +1,6 @@
+# managed by ansible role mgmt: the application account, through the VIP like WordPress
+[client]
+user = {{ mysql_wp_user }}
+password = {{ mysql_wp_password }}
+host = {{ vip_address }}
+port = {{ mysql_port }}

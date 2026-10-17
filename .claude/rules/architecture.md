@@ -21,7 +21,7 @@ CLIENT / ADMIN ZONE  vmnet4  172.16.10.0/24
                                 | default route via 172.16.10.254
                                 v
   +-------------------------------------------------------------------+
-  | fw01   Ubuntu 24.04, kernel forwarding + nftables                 |
+  | fw01   Ubuntu 24.04, kernel forwarding and masquerade only        |
   |   172.16.10.254   192.168.10.254   192.168.20.254  192.168.30.254 |
   |   plus a permanent NAT NIC on vmnet8, masquerades for every zone  |
   |   also serves chrony NTP and bind9 DNS to all four zones          |
@@ -43,6 +43,7 @@ DMZ ZONE vmnet1        APP ZONE vmnet2           DB ZONE vmnet3
 ```
 
 - Every arrow that crosses a zone boundary passes through `fw01`. Only VRRP, web to NFS and db01 to db02 stay inside one zone.
+- `fw01` forwards and masquerades but filters nothing, so an arrow not drawn here is merely undesigned, not blocked. See ADR-25.
 - Every lab VM also carries a temporary NAT NIC during provisioning, removed at the end of M1. `fw01`, `mgmt01` and `mon01` keep theirs.
 - 10 VMs in total. `mgmt01` and `mon01` share the client zone but do different jobs on purpose: the load generator must not share a machine with the measuring instrument. See ADR-24.
 
@@ -126,4 +127,4 @@ db02  REPLICA  super_read_only=ON        db02  PRIMARY  read_only=OFF, no replic
 
 - While the NAT NIC exists, the default route points at the NAT gateway and cross-zone traffic needs explicit static routes via `.254`.
 - After the NAT NIC is removed, the default route points at `.254` and no static routes are needed.
-- A node stuck between those two states can ping its own zone but nothing else, which looks exactly like a firewall problem and is not.
+- A node stuck between those two states can ping its own zone but nothing else, which looks exactly like a firewall problem and is not. The lab runs no firewall at all (ADR-25), so `nft list ruleset` rules that out in one command and routing is the only remaining answer.

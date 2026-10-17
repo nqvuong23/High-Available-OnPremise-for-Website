@@ -20,11 +20,16 @@ paths:
 - Restore service, identify the root cause, then roll back through Ansible rather than by hand.
 - Write the postmortem immediately afterwards, while the detail is fresh.
 
-## Chaos directory layout
+## Scenario directory layout
 
-- One directory per scenario: `chaos/Sxx-<name>/`.
-- Inside: `inject.sh` to break it, `rollback.sh` to restore it, and `README.md` with the learning goal and expected observations.
-- 19 scenarios planned, at least 10 required, at least 12 fully completed.
+- One directory per scenario: `scripts/scenario-NN/`, numbered, every file of a scenario inside it.
+- Files are named by the scenario number: `NN-audit.sh`, `NN-simulate.sh`, `NN-rollback.sh`, `NN-troubleshoot.md`.
+- `NN-audit.sh` runs continuously like a dashboard, so the state before, during and after the fault is on screen and in `logs/`.
+- `NN-simulate.sh` injects once; `NN-rollback.sh` restores and waits until the healthy state is proven.
+- `NN-troubleshoot.md` is a manual checklist with the root cause at the bottom. Diagnosis is never automated.
+- Shared helpers live in `scripts/lib/common.sh`; topology comes from `/etc/lab/lab.env`, written by the Ansible role `mgmt`.
+- The lab runs no firewall (ADR-25), so a filter rule exists only while a scenario injects one. It goes into its own nftables table `inet lab_chaos` through `lab_chaos_rule`, never into `/etc/nftables.conf` and never through `ufw`, and the scenario's rollback deletes the table. Nothing is persisted, and an empty ruleset is itself the diagnostic: on a firewall-less node any table at all is the fault.
+- 18 scenarios implemented; `docs/scenarios-demo.md` describes each one.
 
 ## Identified scenarios
 
@@ -34,7 +39,7 @@ paths:
 - A wrong GRANT, from forgetting that MySQL sees the LB address as the source rather than the web node address.
 - Sudden primary death, used to measure RTO and RPO.
 - `fw01` down, which breaks every cross-zone flow at once: HAProxy marks all backends DOWN, web nodes cannot reach the DB VIP, and Ansible cannot reach anything. The lesson is distinguishing a routing outage from a service outage.
-- A static route removed on one node, so it can reach its own zone but nothing else, which looks exactly like a firewall problem.
+- A static route removed on one node, so it can reach its own zone but nothing else, which looks exactly like a firewall problem and cannot be one.
 - IP forwarding turned off on `fw01`, a partial version of the same failure that is harder to spot because the router itself still answers pings.
 
 ## Additional candidates to fill the catalogue
@@ -43,7 +48,7 @@ paths:
 - Stop Nginx or PHP-FPM on one web node.
 - Break the NFS export options or the UID/GID mapping so Nginx cannot read the uploads directory.
 - Fill the disk, and a separate scenario that fills the inode table.
-- Wrong firewall rule blocking 3306, 2049, 9200 or VRRP.
+- A port blocked by an injected `inet lab_chaos` rule: 3306, 2049, 9200 or VRRP. Implemented for 9200 (scenario 14), VRRP (05) and the outbound VIP 3306 path (18). These are the only places a drop rule may appear, and each one must roll back to an empty ruleset.
 - Masquerade rule removed on `fw01`, so the lab keeps working but `apt` stops, which only surfaces on the next deployment.
 - A web node given a second NIC into the db zone, bypassing the router: everything works, and the isolation test silently stops meaning anything.
 - Replication lag spiking, or the IO thread failing.
@@ -90,7 +95,7 @@ paths:
 
 - Automated because the risk is low: VIP movement, removing a failed web node, log rotation, disk and inode detection, sending alerts.
 - Left to a human because the risk is high: promoting a database, opening write access, returning an old primary as a replica, handling errant GTIDs, rolling back a large configuration change, anything touching order data.
-- Network changes sit with the human too: a bad route or firewall apply can lock everyone out of the lab.
+- Network changes sit with the human too: a bad route can lock everyone out of the lab. Dropping the firewall removed one way to do that and left routing as the whole risk.
 
 ## Load test
 
