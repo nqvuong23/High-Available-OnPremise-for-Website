@@ -5,14 +5,14 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 ansible_dir=$(cd "${ANSIBLE_DIR:-$here/../../ansible}" && pwd)
-vault_file="$ansible_dir/inventory/group_vars/all/vault.yml"
+vault_file="$ansible_dir/inventories/group_vars/all/vault.yml"
 pass_file=${VAULT_PASS_FILE:-$HOME/.vault_pass.txt}
 
 command -v ansible-vault >/dev/null || { echo "[ERROR] ansible-vault not found, activate the venv first" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "[ERROR] openssl not found" >&2; exit 1; }
 
 if [[ -e $vault_file && ${1:-} != --force ]]; then
-    echo "[ERROR] $vault_file exists; rerun command with parameter [--force] to replace every secret" >&2
+    echo "[ERROR] $vault_file exists; rerun command \"bash gen-vault.sh --force\" to replace every secret" >&2
     exit 1
 fi
 

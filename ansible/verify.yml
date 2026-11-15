@@ -1,7 +1,3 @@
----
-# Acceptance tests of deploy-v2.md as code. Changes nothing; run after site.yml.
-# Every check is recorded, then the last play prints them all and fails if any failed.
-
 - name: Collect checks on the router
   hosts: router
   gather_facts: false

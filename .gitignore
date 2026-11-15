@@ -33,3 +33,7 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Temp file
+*.tmp
+*.temp

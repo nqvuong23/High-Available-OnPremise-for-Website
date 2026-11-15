@@ -1,13 +1,9 @@
----
-# Topology. Values used by more than one role live here and nowhere else.
-
 ansible_host: "{{ lab_ip }}"
 
 lab_domain: lab.internal
 lab_site_fqdn: "shop.{{ lab_domain }}"
 lab_operator_user: vagrant
 
-# .254 is fw01 in every zone, .1 is the Windows host adapter
 lab_zones:
   dmz:
     subnet: 192.168.10.0/24

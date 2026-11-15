@@ -1,10 +1,5 @@
 ---
-# One run builds the whole lab from the Vagrant base snapshot, bottom-up:
-# router -> storage -> database -> LB/VIP -> web -> control node.
-# There is no firewall layer; the only netfilter rule in the lab is the masquerade
-# the router role writes, so reachability is decided by routing alone. See ADR-25.
-
-- name: Check the secrets before touching any node
+- name: Check the secrets in Vault before touching any node
   hosts: mgmt
   gather_facts: false
   tags: [always]
@@ -17,12 +12,12 @@
           - vault_mysql_wp_password != 'CHANGE_ME'
           - vault_keepalived_auth_pass | length <= 8
         fail_msg: >-
-          [ERROR] inventory/group_vars/all/vault.yml is missing or still holds placeholders;
-          run bash ../scripts/tools/gen-vault.sh first
+          [ERROR] inventories/group_vars/all/vault.yml is missing or still holds placeholders;
+          run \"bash ~/linux_project/scripts/tools/gen-vault.sh\" first
         quiet: true
 
 - name: Apply the baseline to every node
-  hosts: lab
+  hosts: all
   tags: [common]
   roles:
     - common
@@ -53,7 +48,6 @@
     - haproxy
     - keepalived
 
-# nfs_client before wordpress: WooCommerce writes uploads on activation, and they must land on NFS
 - name: Configure the web nodes
   hosts: web
   tags: [web]
