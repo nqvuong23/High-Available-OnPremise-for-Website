@@ -1,26 +1,13 @@
 # On-Premise High-Availability WooCommerce Lab
 
-A 9-VM on-premise lab that runs a WordPress + WooCommerce shop with **no single point of
-failure on any layer that serves a user request**. Built from scratch with Vagrant and
-Ansible, then deliberately broken 18 different ways to measure how it behaves.
-
-This is a self-study infrastructure project for a **Linux System Engineer** internship. The
-goal was not to make something work once, but to build it as code, write the operations
-documents for it, then prove the failover numbers by measuring them.
-
----
-
 ## Table of contents
 
 - [Project overview](#project-overview)
   - [What this project is](#what-this-project-is)
-  - [Goals I had to meet](#goals-i-had-to-meet)
-  - [My role and how I worked](#my-role-and-how-i-worked)
+  - [Goals](#goals)
 - [System architecture](#system-architecture)
   - [Diagram](#diagram)
-  - [The 9 machines](#the-9-machines)
-  - [How a request travels](#how-a-request-travels)
-  - [Design decisions worth explaining](#design-decisions-worth-explaining)
+  - [All machines](#all-machines)
 - [Tech stack](#tech-stack)
 - [Repository layout](#repository-layout)
 - [How to run it](#how-to-run-it)
@@ -40,22 +27,19 @@ documents for it, then prove the failover numbers by measuring them.
 
 ### What this project is
 
-The story behind the lab: a small online shop ran on one VPS. The disk filled up and the
-shop was down for 3 hours. Orders were lost. The sale season is coming and traffic will
-grow. The shop owner asks for a system that survives a single machine failure.
+An on-premise high-availability lab, built with 9 Ubuntu 24.04 VMs, running a
+WordPress + WooCommerce shop at `https://shop.lab.internal`. It has no single point of
+failure on any layer that serves a request, and it is installed entirely by Ansible.
 
-So I built that system on my own PC and then tried to break it.
+- Four routed network zones (DMZ, app, database, admin); every cross-zone packet goes
+  through one router VM, like a real datacenter network.
+- Two load balancers share one virtual IP; if the active one dies, the other takes over.
+- Two web nodes with byte-identical code, deployed only by Ansible.
+- Two MySQL nodes with GTID replication and semi-sync, so a confirmed order always exists
+  on two machines.
+- 18 failure scenarios that break the lab on purpose and measure what it does.
 
-- A WordPress + WooCommerce shop, reachable at `https://shop.lab.internal`.
-- Four separate network zones (DMZ, app, database, admin). All traffic between zones is
-  routed through one router VM, like a real datacenter network.
-- Two load balancers share one virtual IP. If the active one dies, the other takes over.
-- Two web servers with byte-identical code, deployed only by Ansible.
-- Two MySQL servers with replication, so a confirmed order always exists on two machines.
-- Everything is installed by code. The whole lab can be destroyed and rebuilt with one
-  command.
-
-### Goals I had to meet
+### Goals
 
 These were the acceptance targets I set before starting, and every one had to be **measured**,
 not assumed from a config file.
@@ -71,176 +55,117 @@ not assumed from a config file.
 | Repeatable automation | `ansible-playbook site.yml` reports `changed=0` on the second run | second run |
 | Failure testing | at least 12 scenarios, each with inject + rollback + write-up | 18 built |
 
-### My role and how I worked
-
-I worked through this the same way a ticket would move in a real team:
-
-1. **Read the requirement** and turn it into numbers (the table above).
-2. **Build it by hand once**, so I understood the mechanism rather than copying a playbook.
-   That walkthrough is kept: [docs/deploy-v1.md](docs/deploy-v1.md) and
-   [docs/deploy-v2.md](docs/deploy-v2.md).
-3. **Turn it into Ansible roles**, one per layer, and make the playbook idempotent.
-4. **Break it on purpose** with 18 scenarios and record what each one actually did.
-5. **Write the operations documents** so somebody else could run a failover from the text
-   alone.
-
-I built it bottom-up, in dependency order: network and router → OS baseline → database →
-load balancer and virtual IP → shared storage → web and application. Each layer had its own
-acceptance test, and I snapshotted the VMs before moving on.
-
 ---
 
 ## System architecture
 
 ### Diagram
 
-<!-- TODO: replace with your own drawing (draw.io / Excalidraw export) -->
-<!-- Suggested file: docs/images/architecture/topology.png -->
-
 ![System topology](docs/images/architecture/topology.png)
 
-Text version of the same thing:
-
-```
-ADMIN ZONE  172.16.10.0/24
-  mgmt01 .11   Ansible, test scripts, load generator
-                      |
-                      v
-  +---------------------------------------------------------------+
-  | fw01   the router: forwards between all 4 zones               |
-  |        also serves internal DNS (bind9) and time (chrony)     |
-  +----+--------------------+---------------------+---------------+
-       |                    |                     |
-  DMZ ZONE             APP ZONE              DB ZONE
-  192.168.10.0/24      192.168.20.0/24       192.168.30.0/24
-       |                    |                     |
-  Virtual IP .100           |                     |
-  +--------+ +--------+     |  +--------+ +--------+   +--------+ +--------+
-  |lb01 .11| |lb02 .12|     |  |web01.11| |web02.12|   |db01 .11| |db02 .12|
-  |HAProxy | |HAProxy |     |  |Nginx   | |Nginx   |   |PRIMARY | |REPLICA |
-  |Keepalvd| |Keepalvd|     |  |PHP-FPM | |PHP-FPM |   |writable| |read-only|
-  | active | | standby|     |  +---+----+ +----+---+   +---+----+ +----+---+
-  +--------+ +--------+     |      |           |           |  replication  |
-                            |      +-----+-----+           +-------+-------+
-                            |      | nfs01 .21 |
-                            |      | shared    |
-                            |      | uploads   |
-                            |      +-----------+
-```
-
-### The 9 machines
-
-All nine machines fit in 8 GB of RAM on one Windows PC.
+### All machines
 
 | Node | Zone and IP | RAM | vCPU | Job |
 |---|---|---|---|---|
-| `fw01` | all 4 zones, `.254` | 512 MB | 2 | Router between zones, internet access, DNS, time |
-| `lb01` | dmz `192.168.10.11` | 512 MB | 1 | HAProxy + Keepalived, active |
-| `lb02` | dmz `192.168.10.12` | 512 MB | 1 | HAProxy + Keepalived, standby |
+| `fw01` | all 4 zones, `.254` | 512 MB | 2 | Router between zones, DNS server, NTP server |
+| `lb01` | dmz `192.168.10.11` | 512 MB | 1 | HAProxy + Keepalived, master node |
+| `lb02` | dmz `192.168.10.12` | 512 MB | 1 | HAProxy + Keepalived, backup node |
 | `web01` | app `192.168.20.11` | 1 GB | 2 | Nginx + PHP-FPM |
 | `web02` | app `192.168.20.12` | 1 GB | 2 | Nginx + PHP-FPM |
 | `nfs01` | app `192.168.20.21` | 512 MB | 1 | Shared storage for uploaded images |
-| `db01` | db `192.168.30.11` | 1.5 GB | 2 | MySQL, first primary |
+| `db01` | db `192.168.30.11` | 1.5 GB | 2 | MySQL, primary |
 | `db02` | db `192.168.30.12` | 1.5 GB | 2 | MySQL, replica |
-| `mgmt01` | admin `172.16.10.11` | 1 GB | 2 | Control node: Ansible, test scripts |
+| `mgmt01` | admin `172.16.10.11` | 1 GB | 2 | Control node: Ansible, test scripts (k6) |
 
-The virtual IP `192.168.10.100` is the only address a user ever talks to. It is owned by
-Keepalived and moves between `lb01` and `lb02`.
-
-### How a request travels
-
-Reading a product page:
-
-1. The browser resolves `shop.lab.internal` to the virtual IP `192.168.10.100`.
-2. `fw01` routes the request from the admin zone into the DMZ zone.
-3. Whichever load balancer holds the virtual IP accepts the HTTPS connection and decrypts it.
-4. HAProxy picks a web node that is healthy and forwards plain HTTP to it.
-5. Nginx serves images from the shared NFS storage and passes PHP to PHP-FPM.
-6. PHP connects to MySQL **through the virtual IP**, so it never needs to know which
-   database node is currently writable.
-
-Placing an order is the same path, but the write goes further: the primary database writes
-it, sends it to the replica, and **waits for the replica to confirm it arrived** before
-telling the shop "order placed". That is why a confirmed order always exists on two
-machines.
-
-### Design decisions worth explaining
-
-Every choice below cost something. Writing down the cost is the part I found most useful.
-
-| Decision | Why | What it costs |
-|---|---|---|
-| HAProxy, not Nginx, as load balancer | Active health checks, a runtime API to enable/disable a server with no reload, and it balances TCP so MySQL can use it too | One more tool to learn |
-| TLS ends at HAProxy | Certificates live in one place; web nodes only speak plain HTTP inside | Traffic from LB to web is unencrypted (private network, accepted) |
-| Web health check only checks "Nginx can reach PHP" | A health check that touched the database would mark **both** web nodes down when the database slows, turning one fault into a full outage | It cannot detect a database fault, so that needs a separate check |
-| Database failover is **manual**, never automatic | Automatic failover without proper fencing can produce two writable primaries and corrupt order data. For money, a few minutes waiting for a human is safer | Failover time is minutes, not seconds, and depends on the on-call person |
-| Both database nodes boot read-only | Any node that restarts comes back unable to accept writes. Simple protection against two primaries | After a planned restart, an operator must open write access by hand |
-| Application connects through the virtual IP, not to a node name | Changing primary becomes a load balancer operation, not an edit on every web node | Extra network hop, and MySQL sees the load balancer's IP as the client |
-| 4 routed zones, not one flat network | Looks like a real deployment and creates realistic routing work | `fw01` is in the path of everything, including order writes |
-
-The full list with the reasoning is in [docs/deploy-v2.md](docs/deploy-v2.md).
+The virtual IP `192.168.10.100` is the only address a user ever connects to. It is owned by Keepalived and moves between `lb01` and `lb02`.
 
 ---
 
 ## Tech stack
 
-| Area | What I used |
+| Area | Technologies |
 |---|---|
-| Operating system | Ubuntu 24.04 LTS on all 9 VMs |
-| Virtualization | VMware Workstation Pro, Vagrant, 5 virtual networks |
-| Automation | Ansible (12 roles, secrets in Ansible Vault, checked with `ansible-lint`) |
-| Load balancer | HAProxy 3.3 (upstream repo), Keepalived 2.2.8 with VRRP |
-| Web | Nginx 1.30 (upstream repo), PHP-FPM 8.3 |
-| Application | WordPress + WooCommerce, managed with WP-CLI |
-| Database | MySQL 8.4 LTS (Oracle repo), GTID replication, semi-synchronous |
+| Operating system | Ubuntu 24.04 LTS on all 9 VMs, from one `bento/ubuntu-24.04` box |
+| Virtualization | VMware Workstation Pro 25H2, Vagrant 2.4.9, 5 virtual networks |
+| Automation | ansible-core 2.20 in a virtualenv on `mgmt01`, secrets in Ansible Vault |
+| Load balancer | HAProxy 3.3 (upstream repo), Keepalived 2.2.8 |
+| Web | Nginx 1.30.5 (upstream repo), PHP-FPM 8.3 |
+| Application | WordPress 7.0.x + WooCommerce 11.1.x, managed with WP-CLI |
+| Database | MySQL Community 8.4 LTS (Oracle repo), GTID replication with semi-sync |
 | Shared storage | NFS v4.2 |
 | Routing and services | Linux kernel forwarding, bind9 (internal DNS), chrony (NTP) |
-| Internal TLS | Self-signed certificate authority, created with Ansible |
-| Testing | Bash test scripts with a live dashboard, Python for order/RPO measurement, k6 for load |
+| Internal TLS | Self-signed certificate authority |
+| Testing | Bash scripts with a live dashboard, Python 3.12 + PyMySQL for order/RPO measurement, k6 for load |
 
 ---
 
 ## Repository layout
 
 ```
-Vagrantfile                 all 9 VMs, networks and MAC addresses in one file
-vagrant-provision/          the minimum needed before Ansible can log in
-ansible/
-  site.yml                  builds the whole lab in one run
-  verify.yml                the acceptance tests, written as a playbook
-  inventory/                every IP address, declared once
-  roles/                    common, router, mysql, mysqlchk, haproxy, keepalived,
-                            nfs_server, nfs_client, nginx_php, wordpress, mgmt
-scripts/
-  lib/common.sh             shared probes and the live dashboard loop
-  scenario-NN/              one folder per failure test (18 of them)
-docs/
-  how-to-setup.md           host setup, from zero
-  deploy-v1.md              DNS, time and shared storage, done by hand first
-  deploy-v2.md              database, load balancer, web, done by hand first
-  scenarios-demo.md         all 18 failure tests in detail
-  images/                   screenshots and diagrams
+├── Vagrantfile                        all 9 VMs, networks and NICs matched by MAC address
+├── vagrant-provision/
+│   ├── bootstrap.sh                   the minimum needed before Ansible can log in
+│   └── ansible-key.pub                shared SSH key, must exist before the first vagrant up
+├── ansible/
+│   ├── README.md                      what runs where, and where every value lives
+│   ├── ansible.cfg
+│   ├── requirements.yml               collections pinned for the build
+│   ├── site.yml                       builds the whole lab in one run
+│   ├── verify.yml                     the acceptance tests, written as a playbook
+│   ├── inventories/
+│   │   ├── hosts.yml                  every IP address, declared once
+│   │   └── group_vars/all/            vars.yml, plus the Vault file and its example
+│   └── roles/                         common, router, nfs_server, nfs_client, mysql,
+│                                      mysqlchk, haproxy (with the internal PKI),
+│                                      keepalived, nginx_php, wordpress, mgmt
+├── scripts/
+│   ├── README.md                      how to run a scenario, and what to check first
+│   ├── lib/common.sh                  shared SSH helpers, probes, the dashboard loop
+│   ├── tools/gen-vault.sh             random secrets for a fresh lab
+│   └── scenario-NN/                   one folder per failure test (18 of them)
+│       ├── NN-audit.sh                continuous dashboard: before, during, after
+│       ├── NN-simulate.sh             injects the fault once
+│       ├── NN-rollback.sh             restores the healthy state and proves it
+│       └── NN-troubleshoot.md         manual diagnosis, root cause at the bottom
+├── docs/
+│   ├── how-to-setup.md                the manual build of every VM, from nothing
+│   ├── scenarios-demo.md              all 18 failure tests in detail
+│   └── images/                        screenshots and diagrams, one folder per scenario
+└── linux_project.drawio               source of the topology diagram
 ```
+
+Scenario 16 is the only one with extra files: `16-order-writer.py` writes orders
+continuously and `16-rpo-check.py` reconciles them after the failover.
 
 ---
 
 ## How to run it
 
+The host needs VMware Workstation Pro, Vagrant with the `vagrant-vmware-desktop` plugin,
+and the 5 VMnets from [docs/how-to-setup.md](docs/how-to-setup.md), which also documents the
+manual build of every VM behind the Ansible roles.
+
 On the Windows host:
 
 ```powershell
 vagrant up --provider vmware_desktop     # build all 9 VMs
-ssh mgmt01                               # jump into the control node
+vagrant ssh mgmt01                       # jump into the control node
 ```
 
 On `mgmt01`:
 
 ```bash
-cd ansible
-ansible all -m ping                      # every node reachable over its zone NIC
-ansible-playbook site.yml                # build everything
-ansible-playbook site.yml                # run again: must report changed=0
-ansible-playbook verify.yml              # the acceptance tests
+source ~/ansible-venv/bin/activate
+chmod o-w ~/linux_project/ansible      
+cd ~/linux_project/ansible   
+export ANSIBLE_CONFIG=$PWD/ansible.cfg
+
+ansible-galaxy collection install -r requirements.yml -p ./collections
+bash ~/linux_project/scripts/tools/gen-vault.sh 
+
+ansible all -m ping
+ansible-playbook site.yml
+ansible-playbook verify.yml
 ```
 
 `verify.yml` prints one line per check, so a healthy lab looks like this:
@@ -249,6 +174,10 @@ ansible-playbook verify.yml              # the acceptance tests
 <!-- Suggested file: docs/images/architecture/verify-green.png -->
 
 ![Acceptance tests passing](docs/images/architecture/verify-green.png)
+
+A second `site.yml` run must report `changed=0`; anything still `changed` is a bug in that
+task. More detail on what each play does and where every value lives:
+[ansible/README.md](ansible/README.md).
 
 ---
 
@@ -272,7 +201,8 @@ Each scenario folder has four files:
 | `NN-rollback.sh` | Restores the system and waits until the healthy state is proven again |
 | `NN-troubleshoot.md` | A manual checklist. I diagnose by hand and only read the root cause at the bottom afterwards |
 
-Two terminals on `mgmt01`:
+Two terminals on `mgmt01`, from `scripts/` ([scripts/README.md](scripts/README.md) has the
+options and the pre-flight checks):
 
 ```bash
 # terminal 1 — start watching before anything breaks
