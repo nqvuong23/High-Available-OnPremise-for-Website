@@ -7,11 +7,13 @@
   - [Step 2: Create the virtual networks](#step-2-create-the-virtual-networks)
   - [Step 3: Build the lab](#step-3-build-the-lab)
   - [Step 4: Verify, then snapshot](#step-4-verify-then-snapshot)
+- [Note: About install package by APT Repo](#note-about-install-package-by-apt-repo)
 - [Config VM](#config-vm)
   - [fw01](#fw01)
     - [1. Install packages](#1-install-packages)
     - [2. Config NTP server](#2-config-ntp-server)
     - [3. Config internal DNS server by BIND9](#3-config-internal-dns-server-by-bind9)
+    - [4. Config forwarding and masquerade](#4-config-forwarding-and-masquerade)
   - [nfs01](#nfs01)
     - [1. Install packages](#1-install-packages-1)
     - [2. Config NTP client](#2-config-ntp-client)
@@ -22,6 +24,7 @@
     - [3. On `db01`](#3-on-db01)
     - [4. On `db02`](#4-on-db02)
     - [5. Verify the database layer](#5-verify-the-database-layer)
+    - [6. Rebuild the replica after error 1236](#6-rebuild-the-replica-after-error-1236)
   - [lb01 and lb02](#lb01-and-lb02)
     - [1. Install packages](#1-install-packages-3)
     - [2. Config NTP client](#2-config-ntp-client-2)
@@ -41,6 +44,7 @@
     - [3. Trust the internal CA](#3-trust-the-internal-ca)
     - [4. Confirm DNS and routing](#4-confirm-dns-and-routing)
     - [5. Ansible reachability](#5-ansible-reachability)
+    - [6. Files the scenario scripts read](#6-files-the-scenario-scripts-read)
 
 ---
 
@@ -86,6 +90,18 @@ vagrant status
 ```powershell
 vagrant snapshot save base
 ```
+
+---
+
+## Note: About install package by APT Repo
+
+> **About the `apt install` lines.** They name *which* packages a node needs, not where they
+> come from. Three of them must not be the version Ubuntu 24.04 ships, so their upstream APT
+> repository and signing key are added **before** the install runs: `haproxy` 3.3 from the
+> HAProxy repo, `nginx` 1.30.5 from the nginx repo, and `mysql-server` 8.4 LTS from the Oracle
+> repo, with Ubuntu's own MySQL held so apt cannot pull 8.0 instead. See ADR-22. Everything
+> else comes from Ubuntu. Confirm what actually landed before moving on: `haproxy -v`,
+> `nginx -v`, `mysql --version`.
 
 ---
 
@@ -351,6 +367,64 @@ sudo systemctl restart named
 sudo ss -tulpn | grep :53
 ```
 
+#### 4. Config forwarding and masquerade
+
+This is the only netfilter rule in the lab. It is NAT, not a filter: policy accept, nothing is
+ever dropped. See ADR-25. Skipping it leaves the lab working only while the temporary NAT NIC
+is still attached, and every zone loses internet access the moment that NIC is removed.
+
+- Forward between the four zones, persistently:
+
+```shell
+sudo tee /etc/sysctl.d/99-router.conf <<'EOF'
+net.ipv4.ip_forward = 1
+EOF
+
+sudo sysctl --system
+sysctl -n net.ipv4.ip_forward      # expect 1
+```
+
+- Find the NAT interface, the one holding a `10.10.10.x` address:
+
+```shell
+ip -brief address | grep 10.10.10.
+```
+
+- Write `/etc/nftables.conf`, replacing `<nat-if>` with that name:
+
+```shell
+#!/usr/sbin/nft -f
+# masquerade only, no packet filtering. See ADR-25.
+
+table ip router_nat
+delete table ip router_nat
+
+define NAT_IF = "<nat-if>"
+
+table ip router_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname $NAT_IF masquerade
+    }
+}
+```
+
+- Validate before loading, then enable:
+
+```shell
+sudo chmod 755 /etc/nftables.conf
+sudo nft -c -f /etc/nftables.conf
+sudo systemctl enable --now nftables
+sudo nft list ruleset        # expect only table ip router_nat, nothing else
+```
+
+- Confirm a lab node can still leave through the router:
+
+```shell
+# on web01, after its own NAT NIC is gone
+curl -sI -m 5 https://archive.ubuntu.com | head -1
+```
+
 ---
 
 ### nfs01
@@ -449,6 +523,16 @@ sudo exportfs -ra
 sudo exportfs -v
 ```
 
+- Create the probe file. `verify.yml` and several scenarios fetch it through nginx on both web
+nodes to prove the shared storage is readable end to end. Without it nginx falls through
+`try_files` to WordPress, and the check reports a WordPress error instead of a missing file:
+
+```shell
+sudo -u www-data tee /srv/nfs/uploads/lab-probe.txt <<'EOF'
+lab probe file, served from nfs01
+EOF
+```
+
 ---
 
 ### db01 and db02
@@ -456,7 +540,7 @@ sudo exportfs -v
 #### 1. Install packages
 
 ```shell
-sudo apt install chrony mysql-server
+sudo apt install chrony mysql-server python3-pymysql
 ```
 
 #### 2. Config NTP client
@@ -601,6 +685,17 @@ CREATE TABLE lab.heartbeat (id TINYINT PRIMARY KEY, ts DATETIME(3) NOT NULL);
 INSERT INTO lab.heartbeat VALUES (1, NOW(3));
 
 CREATE EVENT lab.heartbeat_tick ON SCHEDULE EVERY 1 SECOND DO UPDATE lab.heartbeat SET ts = NOW(3) WHERE id = 1;
+```
+
+Write probe table. Every scenario audit updates this row through the VIP to prove the write
+path works, so without it each audit reports `db-write=1146 no-table` from its first tick and
+no scenario can be measured. It lives in the application database on purpose: the `wp` account
+already has privileges there, so the probe takes exactly the path WordPress takes.
+
+```mysql
+CREATE TABLE wordpress.lab_probe
+  (id TINYINT PRIMARY KEY, ts DATETIME(3) NOT NULL, writer VARCHAR(64) NOT NULL);
+INSERT INTO wordpress.lab_probe VALUES (1, NOW(3), 'manual');
 ```
 
 - mysqlchk on port 9200:
@@ -929,6 +1024,87 @@ DROP TABLE wordpress.probe;
 SELECT ts, NOW(3) FROM lab.heartbeat;
 ```
 
+#### 6. Rebuild the replica after error 1236
+
+Symptom: `SHOW REPLICA STATUS` on `db02` has `Replica_IO_Running: No` and
+
+```
+Got fatal error 1236 from source when reading data from binary log:
+'Cannot replicate because the source purged required binary logs.'
+```
+
+This means `db01` no longer holds the binlog events `db02` still needs. Replication cannot
+recover by itself and `START REPLICA` will fail the same way every time. The replica has to be
+provisioned again from the primary.
+
+- First record what was lost, for the postmortem. The gap is the difference between the two
+sets:
+
+```shell
+# on db01
+mysql -e 'SELECT @@GLOBAL.gtid_purged\G SHOW BINARY LOGS;'
+# on db02
+mysql -e 'SHOW REPLICA STATUS\G' | grep -E 'Executed_Gtid_Set|Last_IO_Error'
+```
+
+On this lab the usual causes are `RESET BINARY LOGS AND GTIDS` run on `db01`, a datadir
+rebuilt, or binlog files removed by hand. `binlog_expire_logs_seconds` is 7 days, so normal
+expiry is not one of them.
+
+- Dump the application and heartbeat databases from `db01`. `--set-gtid-purged=ON` writes the
+primary's GTID state into the dump, which is what lets `SOURCE_AUTO_POSITION=1` work
+afterwards. The `mysql` schema is deliberately left out, so `db02` keeps its own accounts:
+
+```shell
+# from mgmt01
+ssh vagrant@192.168.30.11 "sudo mysqldump --databases wordpress lab \
+  --single-transaction --routines --events --triggers --set-gtid-purged=ON" \
+  > /tmp/db01-app.sql
+
+grep -m1 gtid_purged /tmp/db01-app.sql      # the dump must carry one
+```
+
+- Reset `db02` and import. `RESET BINARY LOGS AND GTIDS` is mandatory: the dump's
+`SET @@GLOBAL.gtid_purged` is refused while the node still has a GTID history:
+
+```shell
+# on db02
+sudo mysql -e "STOP REPLICA; RESET REPLICA ALL;"
+sudo mysql -e "SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF;"
+sudo mysql -e "DROP DATABASE IF EXISTS wordpress; DROP DATABASE IF EXISTS lab;"
+sudo mysql -e "RESET BINARY LOGS AND GTIDS;"
+sudo mysql < /tmp/db01-app.sql
+sudo mysql -e "SET GLOBAL super_read_only=ON; SET GLOBAL read_only=ON;"
+```
+
+Read-only is restored before replication starts on purpose: the applier threads are exempt
+from `read_only`, so the replica stays fenced against application writes while it catches up.
+
+- Point it back at the primary and start:
+
+```mysql
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST = '192.168.30.11',
+  SOURCE_PORT = 3306,
+  SOURCE_USER = 'repl',
+  SOURCE_PASSWORD = '<repl-pass>',
+  SOURCE_AUTO_POSITION = 1,
+  GET_SOURCE_PUBLIC_KEY = 1;
+
+START REPLICA;
+SHOW REPLICA STATUS\G
+```
+
+- Verify, on `db01`, that the replica attached and semi-sync came back:
+
+```mysql
+SHOW GLOBAL STATUS LIKE 'Rpl_semi_sync_source_status';     -- ON
+SHOW GLOBAL STATUS LIKE 'Rpl_semi_sync_source_clients';    -- 1
+```
+
+The heartbeat event is imported as `SLAVESIDE_DISABLED`, which is correct: only a writable
+primary ticks it. It is enabled as part of runbook RB-02 if `db02` is ever promoted.
+
 ---
 
 ### lb01 and lb02
@@ -936,7 +1112,7 @@ SELECT ts, NOW(3) FROM lab.heartbeat;
 #### 1. Install packages
 
 ```shell
-sudo apt install chrony haproxy keepalived
+sudo apt install chrony haproxy keepalived socat
 ```
 
 #### 2. Config NTP client
@@ -2005,7 +2181,7 @@ sudo systemctl restart php8.3-fpm nginx
 
 ```shell
 sudo apt install -y git python3-venv python3-pip python3-pymysql \
-  mysql-client curl nmap traceroute mtr-tiny jq
+  mysql-client curl nmap traceroute mtr-tiny jq socat
 
 python3 -m venv ~/ansible-venv
 ~/ansible-venv/bin/pip install --upgrade pip
@@ -2066,4 +2242,159 @@ resolvectl status | head -20
 source ~/ansible-venv/bin/activate
 cd ~/linux_project/ansible
 ansible all -m ping
+```
+
+#### 6. Files the scenario scripts read
+
+`scripts/lib/common.sh` never has an address or a password typed into it. It reads the topology
+from `/etc/lab/lab.env` and the credentials from `~/.lab/`, both normally written by the Ansible
+role `mgmt`. Build them by hand here, or every scenario stops with
+`[ERROR] /etc/lab/lab.env missing`.
+
+- The topology. Every value below comes from the Ansible inventory, so keep the two in step:
+
+```shell
+sudo mkdir -p /etc/lab
+sudo tee /etc/lab/lab.env <<'EOF'
+# the lab topology as the scenario scripts see it
+LAB_DOMAIN="lab.internal"
+LAB_SITE="shop.lab.internal"
+LAB_VIP="192.168.10.100"
+LAB_SSH_USER="vagrant"
+LAB_SSH_KEY="/home/vagrant/.ssh/ansible-key"
+LAB_PRIVATE="/home/vagrant/.lab"
+LAB_CA_CERT="/usr/local/share/ca-certificates/lab-ca.crt"
+
+LAB_ALL="fw01 lb01 lb02 web01 web02 nfs01 db01 db02 mgmt01"
+LAB_ROUTER="fw01"
+LAB_LBS="lb01 lb02"
+LAB_WEBS="web01 web02"
+LAB_DBS="db01 db02"
+LAB_NFS="nfs01"
+LAB_MGMT="mgmt01"
+LAB_DB_PRIMARY="db01"
+LAB_WP_INSTALL_HOST="web01"
+
+LAB_IP_fw01="172.16.10.254"
+LAB_ZONE_fw01="client"
+LAB_IP_lb01="192.168.10.11"
+LAB_ZONE_lb01="dmz"
+LAB_IP_lb02="192.168.10.12"
+LAB_ZONE_lb02="dmz"
+LAB_IP_web01="192.168.20.11"
+LAB_ZONE_web01="app"
+LAB_IP_web02="192.168.20.12"
+LAB_ZONE_web02="app"
+LAB_IP_nfs01="192.168.20.21"
+LAB_ZONE_nfs01="app"
+LAB_IP_db01="192.168.30.11"
+LAB_ZONE_db01="db"
+LAB_IP_db02="192.168.30.12"
+LAB_ZONE_db02="db"
+LAB_IP_mgmt01="172.16.10.11"
+LAB_ZONE_mgmt01="client"
+
+LAB_GW_dmz="192.168.10.254"
+LAB_SUBNET_dmz="192.168.10.0/24"
+LAB_GW_app="192.168.20.254"
+LAB_SUBNET_app="192.168.20.0/24"
+LAB_GW_db="192.168.30.254"
+LAB_SUBNET_db="192.168.30.0/24"
+LAB_GW_client="172.16.10.254"
+LAB_SUBNET_client="172.16.10.0/24"
+
+# HAProxy sticky cookie value per web node, as written in haproxy.cfg
+LAB_COOKIE_web01="w1"
+LAB_COOKIE_web02="w2"
+
+LAB_MYSQL_PORT="3306"
+LAB_MYSQLCHK_PORT="9200"
+LAB_STATS_PORT="8404"
+LAB_PHP_FPM="php8.3-fpm"
+LAB_WP_DB="wordpress"
+LAB_WP_ROOT="/var/www/wordpress"
+LAB_UPLOADS="/var/www/wordpress/wp-content/uploads"
+LAB_PROBE_FILE="lab-probe.txt"
+LAB_NFS_EXPORT="/srv/nfs/uploads"
+LAB_MYSQL_WP_CNF="/home/vagrant/.lab/wp.cnf"
+LAB_MYSQL_OPS_CNF="/home/vagrant/.lab/ops.cnf"
+LAB_SECRETS="/home/vagrant/.lab/secrets.env"
+EOF
+```
+
+- The credentials, mode 600. `wp.cnf` goes through the VIP exactly like WordPress does;
+`ops.cnf` has no host, so a command using it must pass `-h` and name one node:
+
+```shell
+mkdir -p ~/.lab && chmod 700 ~/.lab
+
+cat > ~/.lab/wp.cnf <<'EOF'
+# the application account, through the VIP like WordPress
+[client]
+user = wp
+password = <wp-pass>
+host = 192.168.10.100
+port = 3306
+EOF
+
+cat > ~/.lab/ops.cnf <<'EOF'
+# the operator account, direct to one named node (pass -h)
+[client]
+user = ops
+password = <ops-pass>
+port = 3306
+EOF
+
+cat > ~/.lab/secrets.env <<'EOF'
+# never print these
+LAB_STATS_USER="admin"
+LAB_STATS_PASS="<stats-pass>"
+LAB_REPL_USER="repl"
+LAB_REPL_PASS="<repl-pass>"
+LAB_WP_USER="wp"
+LAB_OPS_USER="ops"
+EOF
+
+chmod 600 ~/.lab/wp.cnf ~/.lab/ops.cnf ~/.lab/secrets.env
+```
+
+- Reach every node by short name over SSH, which is what the scripts use:
+
+```shell
+cat >> ~/.ssh/config <<'EOF'
+
+Host fw01 lb01 lb02 web01 web02 nfs01 db01 db02
+    User vagrant
+    IdentityFile ~/.ssh/ansible-key
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+
+Host fw01
+    HostName 172.16.10.254
+Host lb01
+    HostName 192.168.10.11
+Host lb02
+    HostName 192.168.10.12
+Host web01
+    HostName 192.168.20.11
+Host web02
+    HostName 192.168.20.12
+Host nfs01
+    HostName 192.168.20.21
+Host db01
+    HostName 192.168.30.11
+Host db02
+    HostName 192.168.30.12
+EOF
+
+chmod 600 ~/.ssh/config
+ssh db01 hostname      # expect db01
+```
+
+- Confirm the scripts can start:
+
+```shell
+cd ~/linux_project/scripts
+bash scenario-07/07-audit.sh -n 1
 ```

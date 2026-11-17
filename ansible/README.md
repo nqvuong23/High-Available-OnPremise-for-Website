@@ -43,6 +43,10 @@ Run `site.yml` a second time: it must report `changed=0`. A remaining `changed` 
 
 ```bash
 ansible-playbook site.yml --check --diff          # detect manual edits on any node
+
+# Set writable on db01 if testing. Defaulty "ON" (1,1)
+ansible db01 -m ansible.builtin.shell -a "mysql -e 'SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF'"
+
 ansible-playbook site.yml --tags web --limit web02
 ansible-vault edit inventories/group_vars/all/vault.yml
 ```

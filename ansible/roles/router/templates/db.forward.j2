@@ -22,6 +22,6 @@ ns1     IN  A       {{ lab_zones[router_ns_zone].gateway }}
 {{ lab_site_fqdn.split('.')[0] }}    IN  A   {{ vip_address }}
 vip     IN  A   {{ vip_address }}
 
-{% for host in groups['lab'] if host not in groups['router'] %}
+{% for host in groups['all'] if host not in groups['router'] %}
 {{ host }}    IN  A   {{ hostvars[host].lab_ip }}
 {% endfor %}

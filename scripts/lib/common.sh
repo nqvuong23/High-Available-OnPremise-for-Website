@@ -483,7 +483,8 @@ probe_mysqlchk() {
 
 probe_replication() {
     local host=$1 out rc io sql lag ioerr sqlerr
-    out=$(db_ops "$host" -e 'SHOW REPLICA STATUS\G' 2>&1)
+    # --column-names cancels the -N in db_ops: vertical output without it has no field labels
+    out=$(db_ops "$host" --column-names -e 'SHOW REPLICA STATUS\G' 2>&1)
     rc=$?
     if (( rc != 0 )); then
         P_STATE=FAIL
@@ -494,11 +495,11 @@ probe_replication() {
         P_STATE=WARN P_DETAIL='not a replica'
         return
     fi
-    io=$(awk -F': ' '/ Replica_IO_Running:/ { print $2 }' <<<"$out")
-    sql=$(awk -F': ' '/ Replica_SQL_Running:/ { print $2 }' <<<"$out")
-    lag=$(awk -F': ' '/ Seconds_Behind_Source:/ { print $2 }' <<<"$out")
-    ioerr=$(awk -F': ' '/ Last_IO_Errno:/ { print $2 }' <<<"$out")
-    sqlerr=$(awk -F': ' '/ Last_SQL_Errno:/ { print $2 }' <<<"$out")
+    io=$(awk -F': ' '/^ *Replica_IO_Running:/ { print $2 }' <<<"$out")
+    sql=$(awk -F': ' '/^ *Replica_SQL_Running:/ { print $2 }' <<<"$out")
+    lag=$(awk -F': ' '/^ *Seconds_Behind_Source:/ { print $2 }' <<<"$out")
+    ioerr=$(awk -F': ' '/^ *Last_IO_Errno:/ { print $2 }' <<<"$out")
+    sqlerr=$(awk -F': ' '/^ *Last_SQL_Errno:/ { print $2 }' <<<"$out")
     if [[ $io == Yes && $sql == Yes ]]; then
         P_STATE=OK P_DETAIL="Yes/Yes lag=${lag}s"
     else

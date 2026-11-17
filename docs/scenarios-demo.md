@@ -1,9 +1,5 @@
 # This is detailed information about every failure scenario of the lab
 
-> Eighteen scenarios, ordered bottom-up like the build: router, load balancers, web and
-> storage, database. Each lives in `scripts/scenario-NN/` with its four files.
-> This page is the overview; the full manual diagnosis of each one is `NN-troubleshoot.md`.
-
 ## How every scenario is run
 
 1. Start from a known state: `ansible-playbook verify.yml` is green, and a snapshot exists.
@@ -13,23 +9,6 @@
 5. `bash scenario-NN/NN-rollback.sh`. It waits until the healthy state is proven.
 6. Ctrl-C the audit. Its summary gives the outage per check: put those numbers in the
    postmortem, never estimates.
-
-## Firewall rules inside a scenario
-
-The lab runs no firewall: `ufw` is purged and `nftables.service` is stopped on every node
-but the router, which keeps a masquerade-only table. See ADR-25.
-
-Three scenarios (05, 14, 18) still need a blocked port to be realistic, so they inject one
-deliberately. The rules are:
-
-- Load the rule with `lab_chaos_rule` from `scripts/lib/common.sh`, which writes it into its
-  own table `inet lab_chaos`. Never into `/etc/nftables.conf`, and never through `ufw`.
-- The matching `NN-rollback.sh` must delete that table with `lab_chaos_clear` and then prove
-  the healthy state, so no scenario can leave a filter behind.
-- Nothing is persisted, so a reboot also clears the fault. `nft list ruleset` must come back
-  empty on every node except the router once a scenario is rolled back.
-- That emptiness is itself the diagnostic value: a non-empty ruleset can only be an injected
-  fault, which is why these three are solvable in one command once you think to look.
 
 ## Catalogue
 

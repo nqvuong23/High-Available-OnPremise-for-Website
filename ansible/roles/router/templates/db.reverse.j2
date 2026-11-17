@@ -4,7 +4,7 @@ $TTL 3600
         {{ router_dns_serial }} 3600 600 604800 3600 )
 @   IN  NS  ns1.{{ lab_domain }}.
 
-{% for host in groups['lab'] if host not in groups['router'] and hostvars[host].lab_zone == router_zone.key %}
+{% for host in groups['all'] if host not in groups['router'] and hostvars[host].lab_zone == router_zone.key %}
 {{ hostvars[host].lab_ip.split('.')[-1] }}  IN  PTR {{ host }}.{{ lab_domain }}.
 {% endfor %}
 {% if vip_address.rsplit('.', 1)[0] == router_zone_prefix %}

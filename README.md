@@ -165,6 +165,10 @@ bash ~/linux_project/scripts/tools/gen-vault.sh
 
 ansible all -m ping
 ansible-playbook site.yml
+
+# Set writable on db01 if testing. Defaulty "ON" (1,1)
+ansible db01 -m ansible.builtin.shell -a "mysql -e 'SET GLOBAL super_read_only=OFF; SET GLOBAL read_only=OFF'"
+
 ansible-playbook verify.yml
 ```
 
@@ -513,8 +517,3 @@ The things I did not expect before starting:
   dropping a dead web node are safe to automate. Promoting a database that holds order data
   is not, and saying "this is deliberately manual" is a stronger answer than automating it
   badly.
-
----
-
-<sub>Self-study infrastructure project. All configuration is in this repository; the lab can
-be rebuilt from scratch with `vagrant up` and `ansible-playbook site.yml`.</sub>

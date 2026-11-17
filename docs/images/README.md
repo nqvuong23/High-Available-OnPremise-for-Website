@@ -24,6 +24,7 @@ a file is never ambiguous once it is out of its folder.
 | `scenario-16/16-failover.png` | The manual failover steps in the terminal |
 
 Add more for the other scenarios as they are run; the folders already exist.
+[../evidence-checklist.md](../evidence-checklist.md) lists what each shot must contain, per scenario.
 
 ## Taking a usable screenshot
 

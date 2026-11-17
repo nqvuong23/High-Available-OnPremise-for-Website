@@ -84,7 +84,7 @@
     mode: "0600"
     marker: "# {mark} ANSIBLE MANAGED LAB HOSTS"
     block: |
-      {% for host in groups['lab'] if host not in groups['mgmt'] %}
+      {% for host in groups['all'] if host not in groups['mgmt'] %}
       Host {{ host }}
           HostName {{ hostvars[host].lab_ip }}
           User {{ lab_operator_user }}

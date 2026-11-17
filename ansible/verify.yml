@@ -259,7 +259,7 @@
           {% for check in hostvars[item].verify_results %}
           {{ '[OK]  ' if check.ok | bool else '[FAIL]' }} {{ item }}: {{ check.name }} ({{ check.detail }})
           {% endfor %}
-      loop: "{{ groups['lab'] }}"
+      loop: "{{ groups['all'] }}"
       when: hostvars[item].verify_results is defined
 
     - name: Fail if any check failed
@@ -269,7 +269,7 @@
         success_msg: "[OK] every acceptance check passed"
       vars:
         verify_failed: >-
-          {{ groups['lab']
+          {{ groups['all']
              | map('extract', hostvars)
              | selectattr('verify_results', 'defined')
              | map(attribute='verify_results') | flatten
