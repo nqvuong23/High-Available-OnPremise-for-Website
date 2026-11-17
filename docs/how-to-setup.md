@@ -1,5 +1,49 @@
 # How to set up the lab from nothing
 
+## Table of contents
+
+- [Initial VM](#initial-vm)
+  - [Step 1: Install the host software](#step-1-install-the-host-software)
+  - [Step 2: Create the virtual networks](#step-2-create-the-virtual-networks)
+  - [Step 3: Build the lab](#step-3-build-the-lab)
+  - [Step 4: Verify, then snapshot](#step-4-verify-then-snapshot)
+- [Config VM](#config-vm)
+  - [fw01](#fw01)
+    - [1. Install packages](#1-install-packages)
+    - [2. Config NTP server](#2-config-ntp-server)
+    - [3. Config internal DNS server by BIND9](#3-config-internal-dns-server-by-bind9)
+  - [nfs01](#nfs01)
+    - [1. Install packages](#1-install-packages-1)
+    - [2. Config NTP client](#2-config-ntp-client)
+    - [3. Config NFS server](#3-config-nfs-server)
+  - [db01 and db02](#db01-and-db02)
+    - [1. Install packages](#1-install-packages-2)
+    - [2. Config NTP client](#2-config-ntp-client-1)
+    - [3. On `db01`](#3-on-db01)
+    - [4. On `db02`](#4-on-db02)
+    - [5. Verify the database layer](#5-verify-the-database-layer)
+  - [lb01 and lb02](#lb01-and-lb02)
+    - [1. Install packages](#1-install-packages-3)
+    - [2. Config NTP client](#2-config-ntp-client-2)
+    - [3. On `lb01`](#3-on-lb01)
+    - [4. On `lb02`](#4-on-lb02)
+    - [5. Verify the VIP layer](#5-verify-the-vip-layer)
+    - [6. Prove the VIP actually moves](#6-prove-the-vip-actually-moves)
+  - [web01 and web02](#web01-and-web02)
+    - [1. Install packages](#1-install-packages-4)
+    - [2. Config NTP client](#2-config-ntp-client-3)
+    - [3. Config NFS client](#3-config-nfs-client)
+    - [4. On `web01`](#4-on-web01)
+    - [5. On `web02`](#5-on-web02)
+  - [mgmt01](#mgmt01)
+    - [1. Install package](#1-install-package)
+    - [2. Config NTP client](#2-config-ntp-client-4)
+    - [3. Trust the internal CA](#3-trust-the-internal-ca)
+    - [4. Confirm DNS and routing](#4-confirm-dns-and-routing)
+    - [5. Ansible reachability](#5-ansible-reachability)
+
+---
+
 ## Initial VM
 
 ### Step 1: Install the host software
@@ -1470,15 +1514,17 @@ chmod 0555 /var/www/wordpress/wp-content/uploads
 - Add to file `/etc/fstab`:
 
 ```shell
-192.168.20.21:/srv/nfs/uploads  /var/www/wordpress/wp-content/uploads  nfs4  nfsvers=4.2,hard,noatime,_netdev  0  0
+192.168.20.21:/srv/nfs/uploads  /var/www/wordpress/wp-content/uploads  nfs4  nfsvers=4.2,hard,noatime,_netdev,noauto,x-systemd.automount,x-systemd.mount-timeout=60  0  0
 ```
 
 - Run command:
 
 ```shell
-sudo mount -a
 sudo systemctl daemon-reload
-findmnt /var/www/wordpress/wp-content/uploads
+
+# the mount only happens on access, so ask for it before checking
+ls -A /var/www/wordpress/wp-content/uploads
+findmnt -t nfs4 /var/www/wordpress/wp-content/uploads   # expect one nfs4 line
 ```
 
 - Verify the NFS layer:
@@ -1924,7 +1970,9 @@ curl -s http://127.0.0.1/healthz.php # expected ok
 On `web02`
 
 ```shell
-sudo umount /var/www/wordpress/wp-content/uploads
+# stop the trigger as well, or unpacking the tree mounts it again
+sudo systemctl stop "$(systemd-escape -p --suffix=automount /var/www/wordpress/wp-content/uploads)"
+sudo umount /var/www/wordpress/wp-content/uploads 2>/dev/null || true
 ```
 
 On `web01`
@@ -1943,8 +1991,9 @@ sudo chown -R www-data:www-data /var/www/wordpress
 sudo chown root:www-data /var/www/wordpress/wp-config.php
 sudo chmod 640 /var/www/wordpress/wp-config.php
 
-sudo mount -a
-findmnt /var/www/wordpress/wp-content/uploads
+sudo systemctl start "$(systemd-escape -p --suffix=automount /var/www/wordpress/wp-content/uploads)"
+ls -A /var/www/wordpress/wp-content/uploads
+findmnt -t nfs4 /var/www/wordpress/wp-content/uploads
 sudo systemctl restart php8.3-fpm nginx
 ```
 

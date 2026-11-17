@@ -36,7 +36,7 @@ PHP-FPM will not help: new workers block the same way.
 
 ```bash
 ssh web01 'sudo dmesg -T | grep -i nfs | tail -5'
-ssh web01 'findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS /var/www/wordpress/wp-content/uploads'
+ssh web01 'findmnt -t nfs4 -o TARGET,SOURCE,FSTYPE,OPTIONS /var/www/wordpress/wp-content/uploads'
 ssh web01 'sudo timeout -s KILL 3 stat /var/www/wordpress/wp-content/uploads; echo "exit $?"'
 ```
 

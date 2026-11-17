@@ -15,12 +15,14 @@ paths:
 
 - The server runs on nfs01 with `nfs-kernel-server`, NFSv4 only, v3 disabled.
 - Export `/srv/nfs/uploads` to exactly the two web node addresses, with `rw,sync,no_subtree_check`.
-- Clients install `nfs-common` and mount with `nfsvers=4.2,hard,noatime,_netdev`.
+- Clients install `nfs-common` and mount with `nfsvers=4.2,hard,noatime,_netdev,noauto,x-systemd.automount,x-systemd.mount-timeout=60`.
+- The mount is **deferred to first access on purpose**. `_netdev` only waits for the local NIC, so a web node booting before `nfs01` mounts against a server that is not on the network yet, fails with `No route to host`, and nothing retries it: the unit is one-shot and `remote-fs.target` never runs it again. `hard` does not help here, because it governs RPC on a mount that already exists, not the mount attempt. `x-systemd.automount` removes the dependency on boot order instead of guessing a `retry=` value, `noauto` stops `mount -a` making a second direct mount beside the trigger, and the 60 s timeout makes a dead server return an error that the next access retries rather than blocking forever.
 - NFS traffic stays inside the app zone and never touches `fw01`, which is why an NFS failure cannot be confused with a routing failure.
 - Mounting `hard` is deliberate: data integrity first, at the cost of processes hanging in state D when NFS dies.
 - Mount only `wp-content/uploads`, never the whole WordPress tree.
 - Keep the mount point itself `root:root` and `0555` underneath the mount. A mount that fails at boot otherwise leaves a writable local directory in its place, WordPress keeps accepting uploads onto local disk, and the two web nodes diverge with nothing reporting it. Unwritable underneath turns that into a visible upload error instead.
-- Test the mount with `findmnt` and its exit code, never with `ls`. An unmounted mount point lists normally, which is what makes this failure mode so easy to miss.
+- Test the mount with `findmnt -t nfs4` and its exit code, never with `ls`. An unmounted mount point lists normally, which is what makes this failure mode so easy to miss. Plain `findmnt` now answers `autofs` while the trigger is idle, which is healthy, so the filter is what makes the check mean anything.
+- An acceptance check must read the directory first, because an automount only mounts on access. A probe that must not hang reads `/proc/self/mountinfo` through `findmnt` instead and reports `autofs` as its own state.
 
 ## UID and GID
 

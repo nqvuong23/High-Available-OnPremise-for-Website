@@ -32,7 +32,7 @@ ssh web02 'sudo tail -n 3 /var/log/nginx/error.log'
 ## Step 3 — what does the client see on the mount?
 
 ```bash
-ssh web02 'findmnt /var/www/wordpress/wp-content/uploads'
+ssh web02 'findmnt -t nfs4 /var/www/wordpress/wp-content/uploads'
 ssh web02 'sudo -u www-data timeout -s KILL 3 ls -l /var/www/wordpress/wp-content/uploads | head -3'
 ssh web02 'sudo dmesg -T | grep -i nfs | tail -5'
 ```

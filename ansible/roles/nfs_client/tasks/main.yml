@@ -17,8 +17,8 @@
     name: nfs-common
     state: present
 
-- name: Check whether uploads is already mounted
-  ansible.builtin.command: findmnt -n {{ wordpress_uploads_dir }}
+- name: Read the current mount type of uploads
+  ansible.builtin.command: findmnt -n -o FSTYPE {{ wordpress_uploads_dir }}
   register: nfs_client_findmnt
   changed_when: false
   failed_when: false
@@ -34,16 +34,46 @@
     mode: "0555"
   when: nfs_client_findmnt.rc != 0
 
-- name: Mount the shared uploads export
+- name: Declare the uploads export in fstab
   ansible.posix.mount:
     path: "{{ wordpress_uploads_dir }}"
     src: "{{ nfs_ip }}:{{ nfs_export_path }}"
     fstype: nfs4
     opts: "{{ nfs_client_mount_opts }}"
-    state: mounted
+    state: present
+  register: nfs_client_fstab
+
+- name: Name the automount unit of the mount point
+  ansible.builtin.command: systemd-escape -p --suffix=automount {{ wordpress_uploads_dir }}
+  register: nfs_client_unit
+  changed_when: false
+
+- name: Reload systemd so the fstab generator rebuilds the units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: nfs_client_fstab is changed
+
+# one-off migration: a direct mount from the previous options occupies the path and
+# the automount unit cannot be set up underneath it
+- name: Drop a direct mount left by the previous options
+  ansible.builtin.command: umount {{ wordpress_uploads_dir }}
+  when:
+    - nfs_client_fstab is changed
+    - nfs_client_findmnt.stdout == 'nfs4'
+  changed_when: true
+
+- name: Start the uploads automount
+  ansible.builtin.systemd_service:
+    name: "{{ nfs_client_unit.stdout }}"
+    state: started
+
+# the export is only mounted on first access, so the check has to ask for it
+- name: Trigger the automount with a read
+  ansible.builtin.command: timeout 60 ls -A {{ wordpress_uploads_dir }}
+  changed_when: false
 
 - name: Confirm uploads is served by NFS
-  ansible.builtin.command: findmnt -n -o FSTYPE {{ wordpress_uploads_dir }}
+  ansible.builtin.command: findmnt -n -o FSTYPE -t nfs4 {{ wordpress_uploads_dir }}
   register: nfs_client_fstype
   changed_when: false
   failed_when: nfs_client_fstype.stdout != 'nfs4'

@@ -151,8 +151,14 @@
   hosts: web
   gather_facts: false
   tasks:
+    # uploads is an automount, so it is only mounted once something reads it
+    - name: Trigger the uploads automount
+      ansible.builtin.command: "timeout 60 ls -A {{ wordpress_uploads_dir }}"
+      changed_when: false
+      failed_when: false
+
     - name: Read the uploads filesystem type
-      ansible.builtin.command: "findmnt -n -o FSTYPE {{ wordpress_uploads_dir }}"
+      ansible.builtin.command: "findmnt -n -o FSTYPE -t nfs4 {{ wordpress_uploads_dir }}"
       register: verify_mount
       changed_when: false
       failed_when: false

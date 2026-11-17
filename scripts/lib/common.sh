@@ -642,11 +642,20 @@ probe_disk() {
     fi
 }
 
+# reads mountinfo only, never the directory itself, so a probe cannot trigger the
+# automount and cannot hang on a dead server
 probe_mount() {
     local host=$1 out
-    out=$(lab_run "$host" "findmnt -n -o FSTYPE $LAB_UPLOADS || echo not-mounted" 2>/dev/null)
+    out=$(lab_run "$host" "findmnt -n -o FSTYPE -t nfs4 $LAB_UPLOADS \
+          || findmnt -n -o FSTYPE $LAB_UPLOADS \
+          || echo not-mounted" 2>/dev/null)
     P_DETAIL=${out:-ssh-unreachable}
-    if [[ $out == nfs4 ]]; then P_STATE=OK; else P_STATE=FAIL; fi
+    case $out in
+        nfs4)   P_STATE=OK ;;
+        # the trigger is in place but nothing has read uploads since boot
+        autofs) P_STATE=WARN P_DETAIL='autofs, not triggered' ;;
+        *)      P_STATE=FAIL ;;
+    esac
 }
 
 # read the probe file on NFS as www-data; the timeout runs inside sudo so it kills

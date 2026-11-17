@@ -14,9 +14,12 @@ lab_run "$LAB_NFS" "sudo bash -c 'if [ -f /etc/exports.chaos-10 ]; then mv /etc/
     || die "could not restore the exports on $LAB_NFS"
 
 if ! lab_wait_for 15 "uploads readable on $TARGET" probe_nfs_read "$TARGET"; then
-    # a handle refused while unexported can stay stale; a fresh mount clears it
+    # a handle refused while unexported can stay stale; dropping the mount and the
+    # automount trigger clears it, and the next read below mounts it again
     log_warn "remounting uploads on $TARGET"
-    lab_run "$TARGET" "sudo umount -l $LAB_UPLOADS && sudo mount $LAB_UPLOADS" || die "remount failed on $TARGET"
+    lab_run "$TARGET" "sudo umount -l $LAB_UPLOADS 2>/dev/null; \
+        sudo systemctl restart \"\$(systemd-escape -p --suffix=automount $LAB_UPLOADS)\"" \
+        || die "remount failed on $TARGET"
     lab_wait_for 30 "uploads readable on $TARGET after remount" probe_nfs_read "$TARGET"
 fi
 lab_state_clear
